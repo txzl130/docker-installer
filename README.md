@@ -28,6 +28,10 @@ curl -fsSL .../install.sh | bash -s -- emby-proxy-manager --dir /data/epm --forc
 curl -fsSL .../install.sh | bash -s -- emby-proxy-manager --dry-run
 ```
 
+> 国内服务器如果拉 `raw.githubusercontent.com` 很慢或卡住，把地址换成 jsDelivr：
+> `curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh | bash -s -- emby-proxy-manager`
+> （脚本内部下载安装包时也会自动在 raw → jsDelivr → ghfast 之间切换，不用手改。）
+
 | 参数 | 作用 |
 |---|---|
 | `--list` | 列出所有项目 |

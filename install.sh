@@ -255,6 +255,8 @@ fi
 # ---------- 输出结果 ----------
 ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "$ip" ] || ip="<本机IP>"
+# 管理台端口：环境里显式设了 UI_PORT 就以它为准（典型场景：9000 被别的服务占了）
+ui_port="${UI_PORT:-${PORTS%%,*}}"
 echo
 printf '%s安装完成%s\n' "$c_grn" "$c_reset"
 [ -n "$PORTS" ] && echo "  端口    $PORTS"
@@ -266,7 +268,7 @@ if [ -n "$CONTAINER" ]; then
   fi
 fi
 [ -n "$NOTE" ] && echo "  说明    $NOTE"
-echo "  访问    http://$ip:${PORTS%%,*}"
+[ -n "$ui_port" ] && echo "  访问    http://$ip:$ui_port"
 
 # ---------- 可选：清理源码 ----------
 if [ "$CLEAN_SRC" = 1 ]; then

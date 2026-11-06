@@ -18,6 +18,7 @@
 #   --image <镜像名>    回退构建时用的镜像 tag（docker build --network host 用）
 #   --container <名字>  容器名，用于等待健康和打印日志
 #   --note <文字>       安装完成后显示的一句话
+#   --version <文字>    指定这次的版本号（默认自动取 VERSION 文件 / package.json / git 短哈希）
 #   --allow-secrets     扫描到疑似凭据也继续（默认中止）
 #   --no-push           只提交到本地，不 push
 #
@@ -38,6 +39,7 @@ die()  { printf '%s[xx]%s %s\n' "$c_red" "$c_reset" "$*" >&2; exit 1; }
 
 NAME=""; SRC=""
 TITLE=""; DIR_DEF=""; PORTS=""; ENV_FROM=""; IMAGE=""; CONTAINER=""; NOTE=""
+VER=""
 ALLOW_SECRETS=0; DO_PUSH=1
 
 while [ $# -gt 0 ]; do
@@ -49,6 +51,7 @@ while [ $# -gt 0 ]; do
     --image)        IMAGE="${2:-}"; shift 2 ;;
     --container)    CONTAINER="${2:-}"; shift 2 ;;
     --note)         NOTE="${2:-}"; shift 2 ;;
+    --version)      VER="${2:-}"; shift 2 ;;
     --allow-secrets) ALLOW_SECRETS=1; shift ;;
     --no-push)      DO_PUSH=0; shift ;;
     -h|--help)      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -64,6 +67,20 @@ for c in tar openssl sha256sum git; do command -v "$c" >/dev/null 2>&1 || die "�
 
 [ -n "$TITLE" ] || TITLE="$NAME"
 [ -n "$DIR_DEF" ] || DIR_DEF="/opt/ysf/docker/$NAME"
+
+# 版本号：--version 优先；否则依次看源码里的 VERSION 文件、package.json、git 短哈希
+if [ -z "$VER" ]; then
+  if [ -f "$SRC/VERSION" ]; then
+    VER="$(head -n1 "$SRC/VERSION" | tr -d '[:space:]')"
+  elif [ -f "$SRC/package.json" ]; then
+    VER="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SRC/package.json" | head -n1)"
+  fi
+fi
+if [ -z "$VER" ] && git -C "$SRC" rev-parse --short HEAD >/dev/null 2>&1; then
+  VER="$(git -C "$SRC" rev-parse --short HEAD)"
+fi
+[ -n "$VER" ] || VER="$(date +%Y%m%d-%H%M)"
+info "版本：$VER"
 
 info "项目：$NAME"
 info "源码：$SRC"
@@ -149,6 +166,7 @@ cp "$tmp/pkg.enc" "$dest/$NAME.tar.gz.enc"
 cat > "$dest/project.conf" <<EOF
 NAME=$NAME
 TITLE=$TITLE
+VERSION=$VER
 DIR=$DIR_DEF
 PORTS=$PORTS
 ENV_FROM=$ENV_FROM
@@ -164,11 +182,11 @@ EOF
 : > "$REPO_ROOT/projects/list.txt"
 for d in "$REPO_ROOT"/projects/*/; do
   [ -f "$d/project.conf" ] || continue
-  n=""; t=""; dd=""
+  n=""; t=""; dd=""; vv=""
   while IFS='=' read -r k v; do
-    case "$k" in NAME) n="$v" ;; TITLE) t="$v" ;; DIR) dd="$v" ;; esac
+    case "$k" in NAME) n="$v" ;; TITLE) t="$v" ;; DIR) dd="$v" ;; VERSION) vv="$v" ;; esac
   done < "$d/project.conf"
-  [ -n "$n" ] && printf '%s|%s|%s\n' "$n" "$t" "$dd" >> "$REPO_ROOT/projects/list.txt"
+  [ -n "$n" ] && printf '%s|%s|%s|%s\n' "$n" "$t" "$dd" "$vv" >> "$REPO_ROOT/projects/list.txt"
 done
 
 ok "已生成 projects/$NAME/（加密包 $size 字节）"
@@ -176,7 +194,7 @@ printf '    tar sha256 %s\n    pkg sha256 %s\n' "$tar_sha" "$pkg_sha"
 
 # ---------- 提交 ----------
 cd "$REPO_ROOT"
-git add projects
+git add -A
 if git diff --cached --quiet; then
   ok "没有变化，不提交"
 else

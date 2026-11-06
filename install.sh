@@ -4,6 +4,8 @@
 #
 # 用法：
 #   curl -fsSL https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh | bash -s -- emby-proxy-manager
+#   # 国内 raw 拉不动就用 jsDelivr：
+#   curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh | bash -s -- emby-proxy-manager
 #   ./install.sh --list
 #   ./install.sh emby-proxy-manager --dir /opt/ysf/docker/emby-proxy-manager
 #
@@ -15,16 +17,23 @@
 #   --dry-run           只下载/校验/解密/解压，不构建也不启动
 #   --no-start          只构建镜像，不启动容器
 #   --password-stdin    从标准输入读密码（不推荐，优先交互输入）
-#   --base <URL>        安装器来源（默认 GitHub raw，可用环境变量 INSTALLER_BASE 覆盖）
+#   --base <URL>        只用指定的安装器来源（默认按 GitHub raw → jsDelivr → ghfast 依次尝试）
 #   -h, --help          帮助
 #
 # 环境变量：
-#   INSTALLER_BASE      安装器根地址，可以指向本地目录做测试，例如 file:///tmp/inst
+#   INSTALLER_BASE      安装器根地址；也可指向本地目录做测试，例如 file:///tmp/inst
 #   INSTALLER_PBKDF2_ITER  解密迭代次数，默认 600000（必须与打包时一致）
 set -euo pipefail
 
 VERSION="1.0.0"
-BASE="${INSTALLER_BASE:-https://raw.githubusercontent.com/txzl130/docker-installer/main}"
+# 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
+# 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
+BASE="${INSTALLER_BASE:-}"
+MIRRORS=(
+  "https://raw.githubusercontent.com/txzl130/docker-installer/main"
+  "https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main"
+  "https://ghfast.top/https://raw.githubusercontent.com/txzl130/docker-installer/main"
+)
 ITER="${INSTALLER_PBKDF2_ITER:-600000}"
 
 c_reset=""; c_red=""; c_grn=""; c_yel=""; c_dim=""
@@ -57,14 +66,30 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-fetch() { # $1 = 源（URL / file:// / 绝对路径），$2 = 输出文件
+fetch_one() { # $1 = 完整源地址，$2 = 输出文件
   local src="$1" out="$2"
   case "$src" in
-    http://*|https://*) curl -fsSL --connect-timeout 15 --retry 2 "$src" -o "$out" ;;
+    http://*|https://*)
+      # max-time / speed-limit：网络卡住时 30 秒内低于 2KB/s 就放弃，不会无限挂着
+      curl -fsSL --connect-timeout 15 --max-time 300 \
+        --speed-limit 2048 --speed-time 30 --retry 1 "$src" -o "$out" ;;
     file://*)           cp -- "${src#file://}" "$out" ;;
     /*)                 cp -- "$src" "$out" ;;
     *)                  cp -- "$src" "$out" ;;
   esac
+}
+
+fetch() { # $1 = 项目内相对路径，$2 = 输出文件；成功后把可用源记到 BASE
+  local rel="$1" out="$2" base
+  if [ -n "$BASE" ]; then
+    fetch_one "$BASE/$rel" "$out"
+    return $?
+  fi
+  for base in "${MIRRORS[@]}"; do
+    if fetch_one "$base/$rel" "$out"; then BASE="$base"; return 0; fi
+    warn "这个源拉不动，换下一个：$base"
+  done
+  return 1
 }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"; }
@@ -73,7 +98,7 @@ need() { command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"; }
 if [ "$LIST" = 1 ]; then
   need curl
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-  fetch "$BASE/projects/list.txt" "$tmp/list.txt" || die "拉不到项目列表：$BASE/projects/list.txt"
+  fetch "projects/list.txt" "$tmp/list.txt" || die "拉不到项目列表（试过所有镜像），可用 --base 指定源"
   printf '%-28s %-22s %s\n' "项目" "默认目录" "说明"
   while IFS='|' read -r n t d; do
     [ -n "${n:-}" ] || continue
@@ -91,8 +116,8 @@ cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT INT TERM
 
 info "项目：$PROJECT"
-fetch "$BASE/projects/$PROJECT/project.conf" "$tmp/project.conf" \
-  || die "找不到项目 $PROJECT（地址：$BASE/projects/$PROJECT/）"
+fetch "projects/$PROJECT/project.conf" "$tmp/project.conf" \
+  || die "找不到项目 $PROJECT（源：$BASE）——用 --list 看有哪些项目"
 
 # 读取元数据（只认 KEY=VALUE，不执行里面的任何命令）
 NAME=""; TITLE=""; DIR_CONF=""; PORTS=""; ENV_FROM=""; IMAGE=""; CONTAINER=""
@@ -122,7 +147,7 @@ fi
 
 # ---------- 下载 + 校验 ----------
 info "下载安装包 $PKG"
-fetch "$BASE/projects/$PROJECT/$PKG" "$tmp/pkg.enc" || die "下载失败：$BASE/projects/$PROJECT/$PKG"
+fetch "projects/$PROJECT/$PKG" "$tmp/pkg.enc" || die "下载失败：$BASE/projects/$PROJECT/$PKG"
 if [ -n "$PKG_SHA256" ]; then
   got="$(sha256sum "$tmp/pkg.enc" | awk '{print $1}')"
   [ "$got" = "$PKG_SHA256" ] || die "安装包校验失败（可能被改动过）

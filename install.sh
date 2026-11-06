@@ -179,6 +179,7 @@ if [ "$MODE" = "upgrade" ] && [ "$IS_EXISTING" != 1 ]; then
 fi
 
 info "标题：${TITLE:-$NAME}"
+info "安装器版本：$VERSION"
 info "目录：$TARGET_DIR"
 [ -n "$PORTS" ] && info "端口：$PORTS"
 if [ "$MODE" = "upgrade" ]; then
@@ -363,15 +364,21 @@ ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "$ip" ] || ip="<本机IP>"
 # 管理台端口：环境里显式设了 UI_PORT 就以它为准（典型场景：9000 被别的服务占了）
 ui_port="${UI_PORT:-${PORTS%%,*}}"
+# 端口展示也用「实际生效」的第一项（UI_PORT 覆盖时别显示成 9000）
+eff_ports="$PORTS"
+if [ -n "$UI_PORT" ] && [ -n "$PORTS" ]; then
+  rest="${PORTS#*,}"
+  if [ "$rest" = "$PORTS" ]; then eff_ports="$UI_PORT"; else eff_ports="$UI_PORT,$rest"; fi
+fi
 echo
 if [ "$MODE" = "upgrade" ]; then
   printf '%s升级完成%s\n' "$c_grn" "$c_reset"
-  echo "  版本    ${INSTALLED_VERSION:-?} → ${PKG_VERSION:-?}"
+  echo "  版本    ${INSTALLED_VERSION:-未记录} → ${PKG_VERSION:-未记录}"
 else
   printf '%s安装完成%s\n' "$c_grn" "$c_reset"
   [ -n "$PKG_VERSION" ] && echo "  版本    $PKG_VERSION"
 fi
-[ -n "$PORTS" ] && echo "  端口    $PORTS"
+[ -n "$PORTS" ] && echo "  端口    $eff_ports"
 echo "  目录    $TARGET_DIR"
 
 # 密码是否已经设过：设过就不打印令牌（令牌只在首次设置时有用）

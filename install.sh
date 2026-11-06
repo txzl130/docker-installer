@@ -33,9 +33,10 @@ VERSION="1.1.0"
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 BASE="${INSTALLER_BASE:-}"
 MIRRORS=(
-  "https://raw.githubusercontent.com/txzl130/docker-installer/main"
   "https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main"
   "https://ghfast.top/https://raw.githubusercontent.com/txzl130/docker-installer/main"
+  "https://raw.githubusercontent.com/txzl130/docker-installer/main"
+  "https://gh-proxy.com/https://raw.githubusercontent.com/txzl130/docker-installer/main"
 )
 ITER="${INSTALLER_PBKDF2_ITER:-600000}"
 
@@ -83,9 +84,10 @@ fetch_one() { # $1 = 完整源地址，$2 = 输出文件
   local src="$1" out="$2"
   case "$src" in
     http://*|https://*)
-      # max-time / speed-limit：网络卡住时 30 秒内低于 2KB/s 就放弃，不会无限挂着
-      curl -fsSL --connect-timeout 15 --max-time 300 \
-        --speed-limit 2048 --speed-time 30 --retry 1 "$src" -o "$out" ;;
+      # 单个源最多等 120 秒：raw 在国内经常「连上了但一个字节也不给」，
+      # 等太久会让人以为卡死；2KB/s 是历史经验值，低于它就换源。
+      curl -fsSL --connect-timeout 10 --max-time 120 \
+        --speed-limit 512 --speed-time 40 "$src" -o "$out" ;;
     file://*)           cp -- "${src#file://}" "$out" ;;
     /*)                 cp -- "$src" "$out" ;;
     *)                  cp -- "$src" "$out" ;;
@@ -99,7 +101,7 @@ fetch() { # $1 = 项目内相对路径，$2 = 输出文件；成功后把可用�
     return $?
   fi
   for base in "${MIRRORS[@]}"; do
-    if fetch_one "$base/$rel" "$out"; then BASE="$base"; return 0; fi
+    if fetch_one "$base/$rel" "$out"; then BASE="$base"; ok "下载源：$base"; return 0; fi
     warn "这个源拉不动，换下一个：$base"
   done
   return 1

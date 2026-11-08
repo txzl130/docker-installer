@@ -741,3 +741,68 @@ if [ "${#PROJECTS[@]}" -gt 1 ]; then
   echo "全部完成：${PROJECTS[*]}"
   echo "根目录：$ROOT_DIR"
 fi
+
+# ======================================================================
+# 可选：顺便签一张 HTTPS 证书（不用填服务商的密钥）
+# ======================================================================
+offer_cert() {
+  [ "$UNINSTALL" = 1 ] && return 0
+  [ "$DRY_RUN" = 1 ] && return 0
+  [ -n "$TTY_FD" ] || return 0
+
+  local pj have=0 domain email tmp
+  for pj in "${PROJECTS[@]}"; do
+    [ -d "$ROOT_DIR/$pj/data/certs" ] && have=1
+  done
+  [ "$have" = 1 ] || return 0
+
+  echo
+  info "顺手把 HTTPS 也办了？（可选，直接回车 = 先不签）"
+  echo "  不填服务商密钥、不停现有网站：80 端口空着就直接签，被别的网站占着就借用它的目录。"
+  echo "  签完再决定给哪个代理用，随时可以再跑一次。"
+  ask "现在签一张证书吗？(y/N)" "n"
+  case "$REPLY" in
+    y|Y|yes|YES) ;;
+    *) echo "  以后随时可以跑：sudo bash $ROOT_DIR/cert.sh 你的域名"; return 0 ;;
+  esac
+
+  ask "要签的域名（例如 emby.abc.com）" ""
+  domain="$REPLY"
+  case "$domain" in
+    *.*) ;;
+    *) warn "不像一个域名：$domain，先跳过（不影响已装好的服务）"; return 0 ;;
+  esac
+
+  email="${ACME_EMAIL:-}"
+  if [ -z "$email" ]; then
+    ask "邮箱（Let's Encrypt 用来提醒证书快过期）" ""
+    email="$REPLY"
+  fi
+  case "$email" in
+    *@*.*) ;;
+    *) warn "邮箱不像邮箱：$email，先跳过签证书"; return 0 ;;
+  esac
+
+  tmp="$(mktemp -d)"
+  if ! fetch "cert.sh" "$tmp/cert.sh"; then
+    warn "拉不到 cert.sh（不影响安装）"
+    rm -rf "$tmp"; return 0
+  fi
+  cp -f "$tmp/cert.sh" "$ROOT_DIR/cert.sh" 2>/dev/null || true
+  chmod +x "$ROOT_DIR/cert.sh" 2>/dev/null || true
+
+  echo
+  if bash "$tmp/cert.sh" "$domain" --dir "$ROOT_DIR" --email "$email" --no-install; then
+    echo
+    ok "证书签好了：$ROOT_DIR/_certs/$domain/"
+    echo "  接下来在管理台把代理的域名填成 $domain 并保存，然后跑一次："
+    echo "    sudo bash $ROOT_DIR/cert.sh $domain"
+    echo "  （证书还有效，不会再签一遍，只问你要装到哪个代理，装完自动生效）"
+    echo "  自动续期：crontab -e 加一行 → 0 4 * * * bash $ROOT_DIR/cert.sh --renew"
+  else
+    warn "这次没签成（不影响已经装好的服务）。稍后重试：sudo bash $ROOT_DIR/cert.sh $domain"
+  fi
+  rm -rf "$tmp"
+}
+
+offer_cert

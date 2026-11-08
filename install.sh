@@ -32,7 +32,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 # ⚠️ jsDelivr 必须放最后：它的 @main 缓存可能长期返回旧版本，
@@ -160,11 +160,25 @@ ensure_docker() {
 }
 
 port_busy() { # $1 = 端口；被占用返回 0
+  # 升级/重装时，旧容器自己占着这个端口不算冲突（bash 是动态作用域，能读到调用方的 CONTAINER）
+  if [ -n "${CONTAINER:-}" ] && command -v docker >/dev/null 2>&1; then
+    if docker ps -a --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -q "^${CONTAINER} .*:$1->"; then
+      return 1
+    fi
+  fi
   if command -v ss >/dev/null 2>&1; then
     ss -ltn 2>/dev/null | awk 'NR>1{print $4}' | grep -qE "[:.]$1\$"
   else
     netstat -ltn 2>/dev/null | awk 'NR>2{print $4}' | grep -qE "[:.]$1\$"
   fi
+}
+
+port_owner() { # $1 = 端口 → 打印占用它的进程/容器（给人看，判断要不要停）
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp 2>/dev/null | grep -E "[:.]$1 " | head -n3
+  fi
+  command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -E ":$1->" | head -n3
+  return 0
 }
 
 # ---------- 临时目录 ----------
@@ -634,9 +648,11 @@ install_one() {
     if port_busy "$p"; then busy="$busy $p"; fi
   done
   if [ -n "$busy" ]; then
-    die "这些端口已被别的程序占用：${busy}
-  处理办法（任选）：
-    1) 空出端口：ss -ltnp | grep -E ':(5088|9000) ' 找到进程后停掉
+    warn "这些端口已被别的程序占用：${busy}"
+    echo "  占用情况：" >&2
+    for p in $busy; do port_owner "$p" >&2; done
+    die "处理办法（任选）：
+    1) 空出端口：上面列出的进程/容器停掉
     2) 换个端口装：UI_PORT=19000 HEALTH_PORT=18080 bash install.sh $PROJECT
     3) 装完再改 $TARGET_DIR/.env，然后 docker compose up -d"
   fi

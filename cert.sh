@@ -289,6 +289,68 @@ say ""
 fi
 
 # ============================================================================
+# 算出「这个代理现在到底该从哪个地址访问」
+# ============================================================================
+print_access() {
+  local proj="$1" pname="$2"
+  local envf="$ROOT_DIR/$proj/proxies/$pname.env"
+  local dotenv="$ROOT_DIR/$proj/.env"
+  if [ ! -f "$envf" ]; then
+    warn "项目里没有 proxies/$pname.env（代理名可能不对），算不出访问地址"
+    say "  可以先去管理台看一眼这个代理的域名和端口"
+    return 0
+  fi
+  local domains ports mode https_port d p_
+  domains="$(sed -n 's/^DOMAIN=//p' "$envf" | tr ',' '\n' | sed 's/:.*//' | tr -d ' \r' | grep -v '^$' | awk '!seen[$0]++')"
+  ports="$(sed -n 's/^LISTEN_PORT=//p' "$envf" | tr -d ' \r')"
+  mode="$(sed -n 's/^HTTPS_MODE=//p' "$envf" | tr -d ' \r')"
+  if [ -z "$mode" ] && grep -qE '^FORCE_HTTPS=(true|1)$' "$envf" 2>/dev/null; then
+    mode="redirect"
+  fi
+  https_port="$(sed -n 's/^HTTPS_PORT=//p' "$dotenv" 2>/dev/null | tr -d ' \r')"
+  https_port="${https_port:-443}"
+
+  say ""
+  if [ -z "$domains" ]; then
+    warn "这个代理没配域名（DOMAIN 是空的），证书对 IP 访问无效"
+    say "  去管理台「代理」里给它填一个域名，再回来装这张证书"
+    return 0
+  fi
+
+  if [ -z "$mode" ]; then
+    warn "证书已经放好了，但还没启用 HTTPS"
+    say "  去管理台 →「证书」→ 这个代理那一行的「HTTPS 模式」，选："
+    say "    · 本端口直接 HTTPS      → 访问地址就是 https://域名:<代理端口>"
+    say "    · 跳转到共用 HTTPS 端口 → 访问地址是 https://域名:$https_port"
+    say "  启用以后的实际地址："
+  else
+    say "  这个代理现在的访问地址："
+  fi
+
+  for d in $domains; do
+    if [ "$mode" = "direct" ]; then
+      for p_ in ${ports//,/ }; do
+        if [ "$p_" = "443" ]; then say "    https://$d/"; else say "    https://$d:$p_/"; fi
+      done
+    else
+      if [ "$https_port" = "443" ]; then say "    https://$d/"; else say "    https://$d:$https_port/"; fi
+    fi
+  done
+
+  if [ "$mode" != "direct" ]; then
+    for d in $domains; do
+      for p_ in ${ports//,/ }; do
+        say "    http://$d:$p_/   （会自动跳到上面的 https）"
+      done
+    done
+  else
+    say "    注意：本端口直接 HTTPS 时，这个端口的 http:// 会返回 400（不再走明文）"
+  fi
+  say "  这套用的就是容器里的 nginx 反代（不是另装一个 nginx）"
+  return 0
+}
+
+# ============================================================================
 # 装到项目里（目前支持 emby-proxy-manager 这类 data/certs/<代理名>/ 的结构）
 # ============================================================================
 [ "$NO_INSTALL" = 1 ] && exit 0
@@ -337,13 +399,37 @@ EOF
             docker exec "$proj" nginx -s reload >/dev/null 2>&1 &&
             ok "配置已重新生成并生效" || warn "请在管理台「证书」页点一次「重新签发」或重启容器让它生效"
         fi
+        print_access "$proj" "$pname"
       fi
     fi
   fi
 fi
 
 say ""
-say "续期提醒：证书 30 天内到期前跑一次"
-say "  bash cert.sh --renew --dir $ROOT_DIR"
-say "想全自动就加一条定时任务（每天 3 点检查）："
-say "  (crontab -l 2>/dev/null; echo '0 3 * * * bash $(cd "$(dirname "$0")" && pwd)/cert.sh --renew --dir $ROOT_DIR >/var/log/cert-renew.log 2>&1') | crontab -"
+SELF="$(cd "$(dirname "$0")" && pwd)/cert.sh"
+say "续期：证书剩不到 30 天时续一次"
+say "  bash $SELF --renew --dir $ROOT_DIR"
+if [ -n "$TTY_FD" ] && command -v crontab >/dev/null 2>&1; then
+  if crontab -l 2>/dev/null | grep -q 'cert.sh --renew'; then
+    ok "自动续期已经配好了（每天 3:30 检查一次，剩 30 天内才真的续）"
+  else
+    ask "要不要现在就把自动续期配上（每天 3:30 检查一次）？(Y/n)" "y"
+    case "${REPLY:-y}" in
+      n|N|no|NO)
+        say "  没配。以后想配就跑："
+        say "  (crontab -l 2>/dev/null; echo '30 3 * * * bash $SELF --renew --dir $ROOT_DIR >>/var/log/cert-renew.log 2>&1') | crontab -"
+        ;;
+      *)
+        if (crontab -l 2>/dev/null; echo "30 3 * * * bash $SELF --renew --dir $ROOT_DIR >>/var/log/cert-renew.log 2>&1") | crontab - 2>/dev/null; then
+          ok "已配好自动续期（每天 3:30 检查，剩 30 天内自动续）"
+        else
+          warn "配 crontab 失败，请手动加这一行："
+          say "  30 3 * * * bash $SELF --renew --dir $ROOT_DIR >>/var/log/cert-renew.log 2>&1"
+        fi
+        ;;
+    esac
+  fi
+else
+  say "想全自动就加一条定时任务（每天 3:30 检查）："
+  say "  (crontab -l 2>/dev/null; echo '30 3 * * * bash $SELF --renew --dir $ROOT_DIR >>/var/log/cert-renew.log 2>&1') | crontab -"
+fi

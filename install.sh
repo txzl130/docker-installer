@@ -844,10 +844,12 @@ offer_cert() {
   if bash "$tmp/cert.sh" "$domain" --dir "$ROOT_DIR" "${cert_extra[@]}" --no-install; then
     echo
     ok "证书签好了：$ROOT_DIR/_certs/$domain/"
-    echo "  接下来在管理台把代理的域名填成 $domain 并保存，然后跑一次："
-    echo "    sudo bash $ROOT_DIR/cert.sh $domain"
-    echo "  （证书还有效，不会再签一遍，只问你要装到哪个代理，装完自动生效）"
-    echo "  自动续期：crontab -e 加一行 → 0 4 * * * bash $ROOT_DIR/cert.sh --renew"
+    echo "  下一步把这张证书挂到代理上（会顺便告诉你最终访问地址）："
+    echo "    1) 管理台「代理」里把域名填成 $domain 并保存"
+    echo "    2) 跑一次：sudo bash $ROOT_DIR/cert.sh $domain"
+    echo "       （证书还有效，不会重复签；它只问你要挂到哪个代理，挂完打印访问地址，"
+    echo "         并问你要不要配自动续期）"
+    echo "    3) 管理台「证书」里把「HTTPS 模式」选成本端口直接 HTTPS，或跳转到共用 HTTPS 端口"
   else
     warn "这次没签成（不影响已经装好的服务）。稍后重试：sudo bash $ROOT_DIR/cert.sh $domain"
   fi

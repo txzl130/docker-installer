@@ -31,7 +31,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.3.3"
+VERSION="1.3.4"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 BASE="${INSTALLER_BASE:-}"
@@ -662,9 +662,20 @@ install_one() {
   if [ -f "$TARGET_DIR/data/security/auth.json" ]; then
     echo "  密码    已设置过，沿用原来的（忘记密码：删掉 data/security/auth.json 再重启）"
   else
-    local token
-    token="$(docker logs "$CONTAINER" 2>&1 | grep -E '令牌|token' | tail -n 3 || true)"
-    [ -n "$token" ] && echo "  ${token}"
+    local token=""
+    # 优先从文件读（项目把令牌写在 data/security/setup-token.txt，重启也不变）
+    if [ -f "$TARGET_DIR/data/security/setup-token.txt" ]; then
+      token="$(tr -d ' \r\n' < "$TARGET_DIR/data/security/setup-token.txt" 2>/dev/null || true)"
+    fi
+    if [ -z "$token" ] && [ -n "$CONTAINER" ]; then
+      token="$(docker logs "$CONTAINER" 2>&1 | grep -oE '首次设置令牌[:：]? *[0-9a-fA-F]{16,}' | tail -n1 | grep -oE '[0-9a-fA-F]{16,}' || true)"
+    fi
+    if [ -n "$token" ]; then
+      echo "  令牌    $token"
+      echo "          （首次设置密码时填这个；设置完成后系统会自动删掉它）"
+    else
+      echo "  令牌    没取到，手动看：docker logs $CONTAINER | grep -i 令牌"
+    fi
   fi
   [ -n "$NOTE" ] && echo "  说明    $NOTE"
   if [ "$BIND_LOOPBACK" = 1 ]; then

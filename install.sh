@@ -31,7 +31,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.3.5"
+VERSION="1.3.6"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 # ⚠️ jsDelivr 必须放最后：它的 @main 缓存可能长期返回旧版本，
@@ -91,12 +91,18 @@ if [ -z "${DI_LOG:-}" ]; then
 fi
 
 fetch_one() { # $1 = 完整源地址，$2 = 输出文件
-  local src="$1" out="$2"
+  local src="$1" out="$2" u
   case "$src" in
     http://*|https://*)
+      # 加时间戳绕开 CDN 缓存（jsDelivr / ghfast 会长期返回旧文件，
+      # 而我们按内容 sha256 校验，多一次请求比静默装旧版划算）
+      case "$src" in
+        *\?*) u="$src" ;;
+        *)    u="$src?nocache=$(date +%s)-$$" ;;
+      esac
       # 单个源最多等 120 秒：raw 在国内经常「连上了但一个字节也不给」
       curl -fsSL --connect-timeout 10 --max-time 120 \
-        --speed-limit 512 --speed-time 40 "$src" -o "$out" ;;
+        --speed-limit 512 --speed-time 40 "$u" -o "$out" ;;
     file://*)           cp -- "${src#file://}" "$out" ;;
     /*)                 cp -- "$src" "$out" ;;
     *)                  cp -- "$src" "$out" ;;
@@ -375,14 +381,28 @@ install_one() {
   local got bak cbak busy eff_ports first p img status n reply
 
   info "项目：$PROJECT"
-  # project.conf 和安装包必须来自同一个源：CDN 可能缓存了旧版本，
-  # 混着拿会「conf 里的 sha256 对不上新包」，所以逐个源试到一致为止。
+  # project.conf 与安装包必须同源；而且各镜像的缓存新旧不一（jsDelivr / ghfast 都可能长期吃旧缓存）。
+  # 危险的是「旧 conf + 旧包」本身是自洽的：校验和对得上，于是静默装成旧版本。
+  # 所以先把所有源的 conf 都拉下来（带时间戳绕缓存），挑版本号最高的那个源，再用它装。
   local bases=() base fetched=0
   if [ -n "$BASE" ]; then bases=("$BASE"); else bases=("${MIRRORS[@]}"); fi
+  local i=0 cands=() cver cbase sorted
   for base in "${bases[@]}"; do
-    if ! fetch_one "$base/projects/$PROJECT/project.conf" "$tmp/project.conf"; then
-      warn "这个源拉不动，换下一个：$base"; continue
+    if fetch_one "$base/projects/$PROJECT/project.conf" "$tmp/conf.$i"; then
+      cver="$(sed -n 's/^VERSION=//p' "$tmp/conf.$i" | head -n1 | tr -d '\r')"
+      [ -n "$cver" ] || cver="0"
+      cands+=("$cver|$i|$base")
+    else
+      warn "这个源拉不动，跳过：$base"
     fi
+    i=$((i + 1))
+  done
+  [ "${#cands[@]}" -gt 0 ] || die "所有源都拿不到 $PROJECT 的 project.conf（可试试 --base 指定别的源）"
+  sorted="$(printf '%s\n' "${cands[@]}" | sort -t'|' -k1,1Vr)"
+
+  while IFS='|' read -r cver i cbase; do
+    [ -n "$cbase" ] || continue
+    cp -f "$tmp/conf.$i" "$tmp/project.conf"
     # 读取元数据（只认 KEY=VALUE，不执行里面的任何命令）
     NAME=""; TITLE=""; DIR_CONF=""; PORTS=""; ENV_FROM=""; IMAGE=""; CONTAINER=""
     PKG=""; PKG_SHA256=""; TAR_SHA256=""; NOTE=""; PKG_VERSION=""
@@ -394,20 +414,20 @@ install_one() {
         VERSION) PKG_VERSION="$v" ;;
       esac
     done < "$tmp/project.conf"
-    [ -n "$PKG" ] || { warn "$base 上的 project.conf 不完整，换下一个"; continue; }
+    [ -n "$PKG" ] || { warn "$cbase 上的 project.conf 不完整，跳过"; continue; }
 
-    if ! fetch_one "$base/projects/$PROJECT/$PKG" "$tmp/pkg.enc"; then
-      warn "这个源拿不到安装包，换下一个：$base"; continue
+    if ! fetch_one "$cbase/projects/$PROJECT/$PKG" "$tmp/pkg.enc"; then
+      warn "这个源拿不到安装包，换下一个：$cbase"; continue
     fi
     if [ -n "$PKG_SHA256" ]; then
       got="$(sha256sum "$tmp/pkg.enc" | awk '{print $1}')"
       if [ "$got" != "$PKG_SHA256" ]; then
-        warn "$base 的包和校验和不一致（CDN 可能还在缓存旧版本），换下一个源"
+        warn "$cbase 的包和校验和不一致（缓存问题），换下一个源"
         continue
       fi
     fi
-    BASE="$base"; ok "下载源：$base"; fetched=1; break
-  done
+    BASE="$cbase"; ok "下载源：$cbase"; fetched=1; break
+  done <<< "$sorted"
   [ "$fetched" = 1 ] || die "所有源都拿不到 $PROJECT 的可用安装包（可试试 --base 指定别的源）"
 
   [ -n "$NAME" ] || NAME="$PROJECT"

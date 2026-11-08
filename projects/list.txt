@@ -1,1 +1,1 @@
-emby-proxy-manager|Emby|/opt/ysf/docker/emby-proxy-manager|1.1.1
+emby-proxy-manager|Emby 反代管理器|/opt/ysf/docker/emby-proxy-manager|1.1.1

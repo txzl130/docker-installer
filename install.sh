@@ -29,7 +29,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 BASE="${INSTALLER_BASE:-}"
@@ -295,21 +295,42 @@ install_one() {
   local got bak cbak busy eff_ports first p img status n reply
 
   info "项目：$PROJECT"
-  fetch "projects/$PROJECT/project.conf" "$tmp/project.conf" \
-    || die "找不到项目 $PROJECT（源：$BASE）——用 --list 看有哪些项目"
+  # project.conf 和安装包必须来自同一个源：CDN 可能缓存了旧版本，
+  # 混着拿会「conf 里的 sha256 对不上新包」，所以逐个源试到一致为止。
+  local bases=() base fetched=0
+  if [ -n "$BASE" ]; then bases=("$BASE"); else bases=("${MIRRORS[@]}"); fi
+  for base in "${bases[@]}"; do
+    if ! fetch_one "$base/projects/$PROJECT/project.conf" "$tmp/project.conf"; then
+      warn "这个源拉不动，换下一个：$base"; continue
+    fi
+    # 读取元数据（只认 KEY=VALUE，不执行里面的任何命令）
+    NAME=""; TITLE=""; DIR_CONF=""; PORTS=""; ENV_FROM=""; IMAGE=""; CONTAINER=""
+    PKG=""; PKG_SHA256=""; TAR_SHA256=""; NOTE=""; PKG_VERSION=""
+    while IFS='=' read -r k v; do
+      case "$k" in
+        NAME) NAME="$v" ;; TITLE) TITLE="$v" ;; DIR) DIR_CONF="$v" ;; PORTS) PORTS="$v" ;;
+        ENV_FROM) ENV_FROM="$v" ;; IMAGE) IMAGE="$v" ;; CONTAINER) CONTAINER="$v" ;;
+        PKG) PKG="$v" ;; PKG_SHA256) PKG_SHA256="$v" ;; TAR_SHA256) TAR_SHA256="$v" ;; NOTE) NOTE="$v" ;;
+        VERSION) PKG_VERSION="$v" ;;
+      esac
+    done < "$tmp/project.conf"
+    [ -n "$PKG" ] || { warn "$base 上的 project.conf 不完整，换下一个"; continue; }
 
-  # 读取元数据（只认 KEY=VALUE，不执行里面的任何命令）
-  while IFS='=' read -r k v; do
-    case "$k" in
-      NAME) NAME="$v" ;; TITLE) TITLE="$v" ;; DIR) DIR_CONF="$v" ;; PORTS) PORTS="$v" ;;
-      ENV_FROM) ENV_FROM="$v" ;; IMAGE) IMAGE="$v" ;; CONTAINER) CONTAINER="$v" ;;
-      PKG) PKG="$v" ;; PKG_SHA256) PKG_SHA256="$v" ;; TAR_SHA256) TAR_SHA256="$v" ;; NOTE) NOTE="$v" ;;
-      VERSION) PKG_VERSION="$v" ;;
-    esac
-  done < "$tmp/project.conf"
+    if ! fetch_one "$base/projects/$PROJECT/$PKG" "$tmp/pkg.enc"; then
+      warn "这个源拿不到安装包，换下一个：$base"; continue
+    fi
+    if [ -n "$PKG_SHA256" ]; then
+      got="$(sha256sum "$tmp/pkg.enc" | awk '{print $1}')"
+      if [ "$got" != "$PKG_SHA256" ]; then
+        warn "$base 的包和校验和不一致（CDN 可能还在缓存旧版本），换下一个源"
+        continue
+      fi
+    fi
+    BASE="$base"; ok "下载源：$base"; fetched=1; break
+  done
+  [ "$fetched" = 1 ] || die "所有源都拿不到 $PROJECT 的可用安装包（可试试 --base 指定别的源）"
 
   [ -n "$NAME" ] || NAME="$PROJECT"
-  [ -n "$PKG" ] || die "project.conf 缺少 PKG"
 
   # 统一根目录 + 项目名；--dir 给的是根，不是最终目录
   TARGET_DIR="$ROOT_DIR/$NAME"
@@ -355,17 +376,6 @@ install_one() {
     if [ -n "${avail_k:-}" ] && [ "$avail_k" -ge 0 ] 2>/dev/null && [ "$avail_k" -lt 2097152 ]; then
       warn "目标磁盘（$probedir）只剩 $((avail_k / 1024)) MB，可能不够构建（建议至少 2 GB）"
     fi
-  fi
-
-  # ---------- 下载 + 校验 ----------
-  info "下载安装包 $PKG"
-  fetch "projects/$PROJECT/$PKG" "$tmp/pkg.enc" || die "下载失败：$BASE/projects/$PROJECT/$PKG"
-  if [ -n "$PKG_SHA256" ]; then
-    got="$(sha256sum "$tmp/pkg.enc" | awk '{print $1}')"
-    [ "$got" = "$PKG_SHA256" ] || die "安装包校验失败（可能被改动过）
-  期望 $PKG_SHA256
-  实际 $got"
-    ok "校验通过"
   fi
 
   # ---------- 解密 ----------

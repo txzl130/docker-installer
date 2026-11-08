@@ -3,7 +3,9 @@
 一条命令，把我的私有 compose 项目装到任意一台 Linux 服务器上。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh | bash -s -- emby-proxy-manager
+# 推荐：先下载再运行（这样能交互选择项目、目录，也能自动装 Docker）
+curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh -o /tmp/i.sh
+sudo bash /tmp/i.sh
 ```
 
 ## 这是什么
@@ -11,35 +13,49 @@ curl -fsSL https://raw.githubusercontent.com/txzl130/docker-installer/main/insta
 - 源码仍然放在**私有仓库**里，这个仓库里只有：`install.sh`（明文）+ 每个项目的**加密安装包**。
 - 安装时输入密码 → 本地解密 → 释放到目录 → `docker compose build` → `up -d` → 打印访问地址和首次令牌。
 - 仓库公开，但包是 AES-256 加密的；没有密码打不开。
+- 机器没装 Docker 时会**问你要不要自动装**（用官方 get.docker.com，失败再换阿里云镜像）。
 
 ## 用法
 
 ```bash
+# 最省事：不带参数，脚本会列出项目、问你要装哪个、装到哪个目录
+sudo bash /tmp/i.sh
+
 # 看有哪些项目
-curl -fsSL .../install.sh | bash -s -- --list
+bash /tmp/i.sh --list
 
-# 安装（默认目录 /opt/ysf/docker/<项目名>）
-curl -fsSL .../install.sh | bash -s -- emby-proxy-manager
+# 直接指定项目和目录（非交互，适合脚本化）
+sudo bash /tmp/i.sh emby-proxy-manager --dir /opt/ysf/docker/emby-proxy-manager
 
-# 换目录 / 覆盖旧目录 / 装完删源码
-curl -fsSL .../install.sh | bash -s -- emby-proxy-manager --dir /data/epm --force --clean-src
+# 已经装过的目录：同一条命令会自动识别成「升级」，data/、proxies/、.env 都保留
+sudo bash /tmp/i.sh emby-proxy-manager --dir /opt/ysf/docker/emby-proxy-manager
 
 # 只看会做什么，不构建不启动
-curl -fsSL .../install.sh | bash -s -- emby-proxy-manager --dry-run
+bash /tmp/i.sh emby-proxy-manager --dry-run
 ```
 
-> 国内服务器如果拉 `raw.githubusercontent.com` 很慢或卡住，把地址换成 jsDelivr：
-> `curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh | bash -s -- emby-proxy-manager`
-> （脚本内部下载安装包时也会自动在 raw → jsDelivr → ghfast 之间切换，不用手改。）
+也可以直接管道执行（交互提示会从 `/dev/tty` 读，仍然可选项目/目录）：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh | sudo bash -s -- emby-proxy-manager
+```
+
+> 国内服务器如果拉 `raw.githubusercontent.com` 很慢或卡住，用上面 jsDelivr 地址即可。
+> 脚本内部下载安装包时也会自动在 jsDelivr → ghfast → raw → gh-proxy 之间切换，并打印实际用的源。
 
 | 参数 | 作用 |
 |---|---|
-| `--list` | 列出所有项目 |
-| `--dir <路径>` | 安装目录（默认取项目配置） |
-| `--force` | 目录已存在时先备份再覆盖 |
+| `--list` | 列出所有项目（带版本号） |
+| `--dir <路径>` | 安装目录（不给就交互询问，回车用默认值） |
+| `--upgrade` | 强制按升级处理（默认：目录里已有 compose 文件就自动升级） |
+| `--reinstall` / `--force` | 整目录先备份成 `.bak.<时间>`，再按全新安装 |
 | `--clean-src` | 装完删源码，只留镜像和 `data/`（之后不能再重建） |
 | `--dry-run` | 只下载/校验/解密/解压 |
+| `--no-start` | 只构建镜像，不启动容器 |
+| `--password-stdin` | 从标准输入读密码（脚本化用） |
 | `--base <URL>` | 换安装器来源（测试用，可指本地目录） |
+
+环境变量：`UI_PORT` / `HEALTH_PORT` 覆盖端口，`INSTALLER_PASSWORD` 免交互给密码。
 
 ## 加一个新项目（维护者用）
 

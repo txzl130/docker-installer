@@ -3,15 +3,16 @@
 # 仓库：https://github.com/txzl130/docker-installer
 #
 # 用法：
-#   curl -fsSL https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh | bash -s -- emby-proxy-manager
-#   # 国内 raw 拉不动就用 jsDelivr：
-#   curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh | bash -s -- emby-proxy-manager
-#   ./install.sh --list
-#   ./install.sh emby-proxy-manager --dir /opt/ysf/docker/emby-proxy-manager
+#   curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh -o /tmp/i.sh
+#   sudo bash /tmp/i.sh                 # 不带参数 → 列出项目、让你选项目和目录
+#   sudo bash /tmp/i.sh emby-proxy-manager
+#   sudo bash /tmp/i.sh emby-proxy-manager --dir /opt/ysf/docker/emby-proxy-manager
+#   # 也可以直接管道执行（会从 /dev/tty 提问）：
+#   curl -fsSL .../install.sh | sudo bash -s -- emby-proxy-manager
 #
 # 参数：
 #   --list              列出所有可安装的项目
-#   --dir <路径>        指定安装目录（默认取 project.conf 里的 DIR）
+#   --dir <路径>        指定安装目录（不指定时交互询问，回车用 project.conf 里的默认值）
 #   --upgrade           升级已安装的目录（默认行为：目录里已有 docker-compose.yml 时自动升级）
 #   --reinstall         重新安装：整个目录先备份成 .bak，再按全新安装（数据也会被带走）
 #   --force             --reinstall 的别名
@@ -28,7 +29,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 BASE="${INSTALLER_BASE:-}"
@@ -53,11 +54,12 @@ usage() { awk 'NR==1{next} /^set -euo/{exit} {sub(/^# ?/,""); print}' "$0"; }
 
 PROJECT=""; TARGET_DIR=""; CLEAN_SRC=0; FORCE=0; DRY_RUN=0; LIST=0; PW_STDIN=0; NO_START=0
 MODE=""   # fresh / upgrade / reinstall（空 = 自动判断）
+DIR_GIVEN=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --list)           LIST=1; shift ;;
-    --dir)            TARGET_DIR="${2:-}"; [ -n "$TARGET_DIR" ] || die "--dir 需要一个路径"; shift 2 ;;
+    --dir)            TARGET_DIR="${2:-}"; [ -n "$TARGET_DIR" ] || die "--dir 需要一个路径"; DIR_GIVEN=1; shift 2 ;;
     --upgrade)        MODE="upgrade"; shift ;;
     --reinstall)      MODE="reinstall"; shift ;;
     --force)          MODE="reinstall"; shift ;;
@@ -109,6 +111,39 @@ fetch() { # $1 = 项目内相对路径，$2 = 输出文件；成功后把可用�
 
 need() { command -v "$1" >/dev/null 2>&1 || die "缺少命令：$1"; }
 
+# 装 Docker（只在没装、且用户同意时走这里）
+ensure_docker() {
+  if command -v docker >/dev/null 2>&1; then
+    docker compose version >/dev/null 2>&1 || die "docker compose 不可用（需要 Compose v2，运行 docker compose version 看看）"
+    ok "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') 已就绪"
+    return 0
+  fi
+  warn "这台机器还没装 Docker（compose 版安装必须要有它）"
+  if [ -z "$TTY_FD" ]; then
+    die "请先装 Docker，再重新运行：
+  curl -fsSL https://get.docker.com | sh        # 官方脚本
+  # 国内慢就加镜像：curl -fsSL https://get.docker.com | sh -s -- --mirror Aliyun"
+  fi
+  ask "要现在自动安装 Docker 吗？(y/N)" "n"
+  case "$REPLY" in
+    y|Y|yes|YES) ;;
+    *) die "已取消。装好 Docker 后重新运行本脚本即可（data/.env 都不会动）。" ;;
+  esac
+  [ "$(id -u)" = 0 ] || die "自动安装需要 root 权限（试试 sudo -i 后再运行）"
+  info "下载 Docker 官方安装脚本"
+  curl -fsSL --max-time 120 https://get.docker.com -o "$tmp/get-docker.sh" \
+    || die "下载 get.docker.com 失败，请手动安装 Docker 后重试"
+  info "开始安装 Docker（约 1～3 分钟）"
+  if ! sh "$tmp/get-docker.sh"; then
+    warn "默认源安装失败，改用阿里云镜像重试"
+    sh "$tmp/get-docker.sh" --mirror Aliyun || die "Docker 安装失败，请看上面的报错"
+  fi
+  systemctl enable --now docker >/dev/null 2>&1 || service docker start >/dev/null 2>&1 || true
+  command -v docker >/dev/null 2>&1 || die "装完仍找不到 docker 命令，请重新登录 shell 后再试"
+  docker compose version >/dev/null 2>&1 || die "Docker 装好了，但缺少 compose 插件（apt install docker-compose-plugin）"
+  ok "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') 安装完成"
+}
+
 port_busy() { # $1 = 端口；被占用返回 0
   if command -v ss >/dev/null 2>&1; then
     ss -ltn 2>/dev/null | awk 'NR>1{print $4}' | grep -qE "[:.]$1\$"
@@ -117,28 +152,77 @@ port_busy() { # $1 = 端口；被占用返回 0
   fi
 }
 
-# ---------- --list ----------
-if [ "$LIST" = 1 ]; then
-  need curl
-  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-  fetch "projects/list.txt" "$tmp/list.txt" || die "拉不到项目列表（试过所有镜像），可用 --base 指定源"
+# ---------- 临时目录 ----------
+need curl
+tmp="$(mktemp -d)"; chmod 700 "$tmp"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT INT TERM
+
+fetch_list() { fetch "projects/list.txt" "$tmp/list.txt" || die "拉不到项目列表（试过所有镜像），可用 --base 指定源"; }
+
+print_list() {
   printf '%-24s %-18s %-20s %s\n' "项目" "版本" "默认目录" "说明"
   while IFS='|' read -r n t d v; do
     [ -n "${n:-}" ] || continue
     printf '%-24s %-18s %-20s %s\n' "$n" "${v:--}" "${d:--}" "$t"
   done < "$tmp/list.txt"
+}
+
+# ---------- --list ----------
+if [ "$LIST" = 1 ]; then
+  fetch_list
+  print_list
   exit 0
 fi
 
-[ -n "$PROJECT" ] || { usage; echo; die "请指定项目名，或用 --list 看有哪些"; }
+# ---------- 交互能力检测 ----------
+# 直接运行脚本：stdin 是终端，正常交互。
+# 管道运行（curl ... | bash）：stdin 是脚本自身，但 /dev/tty 还在 → 所有提问走 /dev/tty。
+TTY_FD=""
+if [ -t 0 ] && [ -t 1 ]; then
+  TTY_FD=0
+elif ( : >/dev/tty ) 2>/dev/null; then
+  TTY_FD=/dev/tty
+fi
 
-# ---------- 准备 ----------
-need curl; need openssl; need tar; need sha256sum
-tmp="$(mktemp -d)"; chmod 700 "$tmp"
-cleanup() { rm -rf "$tmp"; }
-trap cleanup EXIT INT TERM
+ask() { # $1=提示 $2=默认值 → 结果在 REPLY（回车用默认值）
+  local def="${2:-}" ans="" prompt="$1"
+  [ -n "$def" ] && prompt="$prompt [$def]"
+  if [ -n "$TTY_FD" ]; then
+    printf '%s: ' "$prompt" > "$TTY_FD"
+    IFS= read -r ans < "$TTY_FD" || ans=""
+  fi
+  [ -n "$ans" ] || ans="$def"
+  REPLY="$ans"
+}
+
+ask_secret() { # $1=提示 → 结果在 REPLY（不回显）
+  local ans=""
+  if [ -n "$TTY_FD" ]; then
+    printf '%s' "$1" > "$TTY_FD"
+    IFS= read -rs ans < "$TTY_FD" || ans=""
+    printf '\n' > "$TTY_FD"
+  fi
+  REPLY="$ans"
+}
+
+# ---------- 选项目 ----------
+if [ -z "$PROJECT" ]; then
+  fetch_list
+  echo "可安装的项目："
+  print_list
+  echo
+  if [ -n "$TTY_FD" ]; then
+    ask "要装哪个？输入项目名" "$(head -n1 "$tmp/list.txt" | cut -d'|' -f1)"
+    PROJECT="$REPLY"
+  else
+    die "非交互环境必须指定项目名，例如：bash install.sh emby-proxy-manager（用 --list 看全部）"
+  fi
+fi
+[ -n "$PROJECT" ] || die "没选项目"
 
 info "项目：$PROJECT"
+need openssl; need tar; need sha256sum
 fetch "projects/$PROJECT/project.conf" "$tmp/project.conf" \
   || die "找不到项目 $PROJECT（源：$BASE）——用 --list 看有哪些项目"
 
@@ -157,6 +241,11 @@ done < "$tmp/project.conf"
 [ -n "$NAME" ] || NAME="$PROJECT"
 [ -n "$PKG" ] || die "project.conf 缺少 PKG"
 TARGET_DIR="${TARGET_DIR:-${DIR_CONF:-/opt/ysf/docker/$NAME}}"
+# 没显式给 --dir 时，交互环境下让你确认/修改目录
+if [ "$DIR_GIVEN" = 0 ] && [ -n "$TTY_FD" ]; then
+  ask "安装到哪个目录" "$TARGET_DIR"
+  TARGET_DIR="$REPLY"
+fi
 # 一律转成绝对路径（后面会 cd，相对路径会错位）
 case "$TARGET_DIR" in
   /*) ;;
@@ -192,9 +281,7 @@ fi
 
 # ---------- 环境检查 ----------
 if [ "$DRY_RUN" = 0 ]; then
-  need docker
-  docker compose version >/dev/null 2>&1 || die "docker compose 不可用（需要 Compose v2）"
-  ok "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?') 已就绪"
+  ensure_docker
   # 磁盘：构建 + 缓存，留 2G 以下容易半路失败
   avail_k="$(df -Pk "$(dirname "$TARGET_DIR")" 2>/dev/null | awk 'NR==2{print $4}' || echo 0)"
   if [ -n "$avail_k" ] && [ "$avail_k" -lt 2097152 ] 2>/dev/null; then
@@ -220,10 +307,9 @@ if [ "$PW_STDIN" = 1 ]; then
 elif [ -n "${INSTALLER_PASSWORD:-}" ]; then
   PW="$INSTALLER_PASSWORD"
 else
-  [ -t 0 ] || die "没有终端，无法交互输入密码（可用 --password-stdin）"
-  printf '请输入安装密码：' >&2
-  IFS= read -rs PW || true
-  printf '\n' >&2
+  [ -n "$TTY_FD" ] || die "没有终端，无法交互输入密码（可用 --password-stdin 从管道喂密码）"
+  ask_secret '请输入安装密码（输入时看不到字符）：'
+  PW="$REPLY"
 fi
 [ -n "$PW" ] || die "密码为空"
 

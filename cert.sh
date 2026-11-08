@@ -13,7 +13,7 @@
 #
 #   选项：
 #     --dir <路径>       证书存放根目录（默认 /opt/ysf/docker，证书放 <路径>/_certs/<域名>/）
-#     --email <邮箱>     证书到期提醒邮箱（默认取环境变量 ACME_EMAIL，否则先问一次）
+#     --email <邮箱>     可选：证书到期提醒邮箱（不填也能签）
 #     --webroot <路径>   手动指定网站目录（跳过自动查找）
 #     --staging          用测试环境签（不消耗正式额度，用来验证流程）
 #     --no-install       只签不发，不提示装到项目里
@@ -232,14 +232,8 @@ say "存放    $CERT_DIR"
 [ "$STAGING" = 1 ] && say "模式    测试环境（证书浏览器不认，只验证流程）"
 say ""
 
-# ---------- 邮箱 ----------
-if [ -z "$EMAIL" ]; then
-  if [ -n "$TTY_FD" ]; then
-    ask "证书到期提醒邮箱（随便填一个常用的）" "admin@${DOMAIN#*.}"
-    EMAIL="$REPLY"
-  fi
-fi
-[ -n "$EMAIL" ] || die "需要一个邮箱（--email 或环境变量 ACME_EMAIL）"
+# ---------- 邮箱（可选，不需要也能签）----------
+# 以前强制要邮箱，其实 Let's Encrypt 不强制；给空就注册一个不带邮箱的账户。
 
 # ============================================================================
 # 签证书（acme.sh，跑在临时容器里，不往宿主机装东西）
@@ -255,7 +249,8 @@ docker image inspect "$ACME_IMAGE" >/dev/null 2>&1 || docker pull "$ACME_IMAGE" 
 
 ACME_SERVER_NAME="letsencrypt"
 [ "$STAGING" = 1 ] && ACME_SERVER_NAME="letsencrypt_test"
-issue_args=(--issue --server "$ACME_SERVER_NAME" --keylength ec-256 --accountemail "$EMAIL")
+issue_args=(--issue --server "$ACME_SERVER_NAME" --keylength ec-256)
+[ -n "$EMAIL" ] && issue_args+=(--accountemail "$EMAIL")
 [ "$VERBOSE" = 1 ] && issue_args+=(--debug)
 
 info "开始签发（1~3 分钟）"

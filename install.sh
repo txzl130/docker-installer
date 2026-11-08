@@ -32,7 +32,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 # ⚠️ jsDelivr 必须放最后：它的 @main 缓存可能长期返回旧版本，
@@ -235,17 +235,42 @@ if [ "$DIR_GIVEN" = 0 ] && [ -n "$TTY_FD" ] && [ "$UNINSTALL" = 0 ]; then
 fi
 [ -n "$ROOT_DIR" ] || ROOT_DIR="/opt/ysf/docker"
 
+# ---------- 这台机器上已经装过什么？先问你要装还是要卸 ----------
+if [ -n "$TTY_FD" ] && [ "$UNINSTALL" = 0 ] && [ "${#PROJECTS[@]}" -eq 0 ] && [ -d "$ROOT_DIR" ]; then
+  installed_list=()
+  for d in "$ROOT_DIR"/*/; do
+    [ -f "${d}docker-compose.yml" ] || continue
+    installed_list+=("$(basename "$d")|$(head -n1 "${d}.installed-version" 2>/dev/null || echo '未知')")
+  done
+  if [ "${#installed_list[@]}" -gt 0 ]; then
+    echo
+    echo "这台机器上已经有："
+    for it in "${installed_list[@]}"; do
+      printf '  %-28s %s\n' "${it%%|*}" "版本 ${it##*|}"
+    done
+    ask "要做什么？1=安装/升级（默认）  2=卸载" "1"
+    case "$REPLY" in
+      2|u|U|uninstall) UNINSTALL=1 ;;
+    esac
+  fi
+fi
+
 # ---------- 选项目：编号，可多选 ----------
 if [ "${#PROJECTS[@]}" -eq 0 ]; then
   fetch_list
-  echo "可安装的项目："
+  if [ "$UNINSTALL" = 1 ]; then echo "要卸载哪个项目？"; else echo "可安装的项目："; fi
   print_list
   echo
   if [ -z "$TTY_FD" ]; then
     die "非交互环境必须指定项目（编号或名字），例如：bash install.sh 1"
   fi
   count="$(grep -c . "$tmp/list.txt" || true)"
-  ask "输入编号（可多选，空格或逗号分隔，直接回车=1）" "1"
+  if [ "$UNINSTALL" = 1 ]; then
+    ask "输入要卸载的编号（可多选，空格或逗号分隔）" ""
+    [ -n "$REPLY" ] || die "没选要卸载的项目"
+  else
+    ask "输入编号（可多选，空格或逗号分隔，直接回车=1）" "1"
+  fi
   reply="${REPLY//,/ }"
   PROJECTS=()
   for tok in $reply; do
@@ -770,22 +795,24 @@ offer_cert() {
     *) echo "  以后随时可以跑：sudo bash $ROOT_DIR/cert.sh 你的域名"; return 0 ;;
   esac
 
-  ask "要签的域名（例如 emby.abc.com）" ""
-  domain="$REPLY"
-  case "$domain" in
-    *.*) ;;
-    *) warn "不像一个域名：$domain，先跳过（不影响已装好的服务）"; return 0 ;;
-  esac
-
-  email="${ACME_EMAIL:-}"
-  if [ -z "$email" ]; then
-    ask "邮箱（Let's Encrypt 用来提醒证书快过期）" ""
-    email="$REPLY"
-  fi
-  case "$email" in
-    *@*.*) ;;
-    *) warn "邮箱不像邮箱：$email，先跳过签证书"; return 0 ;;
-  esac
+  # 输入不对就重问，不静默跳过；直接回车 = 不签（明确说一声）
+  domain=""
+  while :; do
+    ask "要签的域名（例如 emby.abc.com；直接回车=先不签）" ""
+    domain="$REPLY"
+    if [ -z "$domain" ]; then
+      echo "  好，先不签。以后随时可以：sudo bash $ROOT_DIR/cert.sh 你的域名"
+      return 0
+    fi
+    case "$domain" in
+      *[!a-zA-Z0-9.-]*|.*|*..*|*.)
+        warn "域名只能有字母、数字、点和横线，而且不能以点开头或结尾，重新输入"; continue ;;
+    esac
+    case "$domain" in
+      *.*) break ;;
+      *) warn "域名中间要有点（像 emby.abc.com 这样），重新输入"; continue ;;
+    esac
+  done
 
   tmp="$(mktemp -d)"
   if ! fetch "cert.sh" "$tmp/cert.sh"; then
@@ -796,7 +823,9 @@ offer_cert() {
   chmod +x "$ROOT_DIR/cert.sh" 2>/dev/null || true
 
   echo
-  if bash "$tmp/cert.sh" "$domain" --dir "$ROOT_DIR" --email "$email" --no-install; then
+  cert_extra=()
+  [ -n "${ACME_EMAIL:-}" ] && cert_extra=(--email "$ACME_EMAIL")
+  if bash "$tmp/cert.sh" "$domain" --dir "$ROOT_DIR" "${cert_extra[@]}" --no-install; then
     echo
     ok "证书签好了：$ROOT_DIR/_certs/$domain/"
     echo "  接下来在管理台把代理的域名填成 $domain 并保存，然后跑一次："

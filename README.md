@@ -117,10 +117,31 @@ sudo bash /opt/ysf/docker/cert.sh emby.你的域名.com
 # 1) 先在管理台建好代理，把域名填成同一个域名
 # 2) 再跑一次（证书还有效，不会重复签，只问你要装到哪个代理）
 sudo bash /opt/ysf/docker/cert.sh emby.你的域名.com
-
-# 自动续期（30 天内到期才续）
-(crontab -l 2>/dev/null; echo '0 3 * * * bash /opt/ysf/docker/cert.sh --renew >/var/log/cert-renew.log 2>&1') | crontab -
 ```
+
+装进代理名下的那一刻，它会**直接告诉你最终访问地址**，例如：
+
+```
+  这个代理现在的访问地址：
+    https://emby.你的域名.com:5088/
+    注意：本端口直接 HTTPS 时，这个端口的 http:// 会返回 400（不再走明文）
+  这套用的就是容器里的 nginx 反代（不是另装一个 nginx）
+```
+
+同一个地方还会问一句「要不要现在就把自动续期配上（每天 3:30 检查）？」，默认 `y` —— 配好后
+**cert.sh 自己每天检查一次，剩不到 30 天才真的续，续完自动 reload nginx**，不用你管。
+（续期用的是 acme.sh 的 `--renew`，跟前面签的是同一套证书目录；加过就不会重复加。）
+
+**关于端口**（两者选一，在管理台「证书」页那个代理的「HTTPS 模式」里切换）：
+
+| 模式 | 访问地址 | 说明 |
+|---|---|---|
+| 本端口直接 HTTPS | `https://域名:5088`（就是代理自己的端口） | 该端口的明文 http 会 400 |
+| 跳转到共用 HTTPS 端口 | `https://域名` 或 `https://域名:8443` | 端口由 `.env` 的 `HTTPS_PORT` 决定，`443` 时地址里不带端口 |
+
+⚠️ **一台机器上 443 只能被一个程序占着**。多个容器各自监听 443 会冲突：
+要么各自用自己的端口（像上面 5088），要么在一台机器上只留**一个**入口（nginx / Caddy / Cloudflare Tunnel）
+按域名分流到各个容器。cert.sh 不替你抢 443，它只管把证书签好、放好、让项目自动 reload。
 
 证书放在 `/opt/ysf/docker/_certs/<域名>/`；装到项目后同时写进 `data/certs/<代理名>/`，并自动重新生成 nginx 配置、reload 生效。
 

@@ -87,6 +87,40 @@ sudo bash /tmp/i.sh --uninstall 1
 
 `install.sh` 不需要改；编号是自动按 `list.txt` 顺序生成的。
 
+## 顺便签 HTTPS 证书（cert.sh）
+
+装完 `install.sh` 会问一句「现在签一张证书吗？」。答 `y`、填一个域名就行 —— **不用填任何服务商密钥，也不停现有网站**：
+
+```bash
+sudo bash /opt/ysf/docker/cert.sh emby.你的域名.com
+```
+
+它自己判断怎么验证：
+
+| 80 端口情况 | 做法 |
+|---|---|
+| 空着 | 起一个临时 acme.sh 容器用 80 验证，签完立刻撤掉 |
+| 被别的网站占着 | 找到那个网站挂载的目录，借它放验证文件（网站不受影响，不需要停） |
+| 被非网站程序占着 | 停下来，告诉你改用 `--webroot 目录` 或项目自带的 DNS 验证 |
+
+签名后的流程：
+
+```bash
+# 1) 先在管理台建好代理，把域名填成同一个域名
+# 2) 再跑一次（证书还有效，不会重复签，只问你要装到哪个代理）
+sudo bash /opt/ysf/docker/cert.sh emby.你的域名.com
+
+# 自动续期（30 天内到期才续）
+(crontab -l 2>/dev/null; echo '0 3 * * * bash /opt/ysf/docker/cert.sh --renew >/var/log/cert-renew.log 2>&1') | crontab -
+```
+
+证书放在 `/opt/ysf/docker/_certs/<域名>/`；装到项目后同时写进 `data/certs/<代理名>/`，并自动重新生成 nginx 配置、reload 生效。
+
+常用参数：`--staging`（测试签发，不消耗正式额度）、`--force`（强制重签）、`--no-install`（只签不装）、`--renew`（续期）、`--dir`（改了根目录时用）、`-v`（显示细节）。
+
+> 域名必须真的解析到这台机器、且 80 端口能从公网访问，否则验证过不了。云服务器记得在安全组放行 80。
+
+
 ## 安全说明（务必看）
 
 - **密码是唯一的门**：24 位随机串，别截图、别发群里。忘了可以用新密码重新打包，不影响已装好的服务器。
@@ -99,6 +133,7 @@ sudo bash /tmp/i.sh --uninstall 1
 ```
 .
 ├── install.sh              # 安装入口
+├── cert.sh                 # 单独签 HTTPS 证书（可选）
 ├── publish.sh              # 打包发布（维护者用）
 ├── projects/
 │   ├── list.txt            # install.sh --list 用
@@ -110,7 +145,9 @@ sudo bash /tmp/i.sh --uninstall 1
 
 ## 常见问题
 
-**解密失败**：密码不对，或者包被改过。重新确认密码。
+**解密失败**：密码不对，或者包被改过。现在 `project.conf` 里有 `PW_CHECK`（密码指纹），密码和这个包对不上时会直接告诉你「这个安装包不是用这个密码加密的」，不会让你白试三次。
+
+**想给已经装好的项目补证书**：`sudo bash /opt/ysf/docker/cert.sh 你的域名`（`cert.sh` 会在安装时自动放到根目录；没有就去仓库下载一份）。80 空着就不用填服务商密钥。
 
 **`docker compose build` 失败、报 DNS 或 apk 错误**：这台机器的 bridge 网络出不了网。`install.sh` 会自动回退到 `docker build --network host`；如果还失败，手动执行那条命令。
 

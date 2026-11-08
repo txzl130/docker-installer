@@ -52,7 +52,9 @@ sudo bash /tmp/i.sh --uninstall 1
 
 > **用 raw 地址，别用 jsDelivr 的 `@main`**：jsDelivr 缓存很顽固，改了脚本它还发旧版。
 > 国内拉 raw 慢就走代理：`https://ghfast.top/https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh`。
-> 脚本内部下载安装包时会自动在 jsDelivr → ghfast → raw → gh-proxy 之间切换（而且要求 conf 和包来自**同一个源**）。
+> 脚本内部下载安装包时会自动在 ghfast → raw → gh-proxy → jsDelivr 之间切换；**每次请求都带时间戳绕缓存**，
+> 并且会把所有源的 `project.conf` 都拉一遍、**挑版本号最高的那个源**再下载包（1.3.6 起）。
+> 原因：旧 conf + 旧包是自洽的，校验和能对上，光靠 sha256 校验挡不住「静默装成旧版本」。
 
 | 参数 | 作用 |
 |---|---|
@@ -128,3 +130,7 @@ sudo bash /tmp/i.sh --uninstall 1
 
 **jsDelivr 拿到的是旧脚本**：首发后 CDN 有缓存，用 `@<commit>` 固定版本的地址最稳，例如
 `https://cdn.jsdelivr.net/gh/txzl130/docker-installer@<7位提交号>/install.sh`。脚本启动时会打印「安装器版本」。
+
+**装完看到的版本比最新版旧**：CDN 的旧 `project.conf` + 旧包是自洽的，校验和能通过。1.3.6 起脚本会把所有镜像的
+conf 都拉一遍、挑版本号最高的源，并且每个请求都带时间戳；如果还遇到，先确认脚本本身是不是新版（开头第一行会打印
+`安装器版本`），必要时用 `--base https://ghfast.top/https://raw.githubusercontent.com/txzl130/docker-installer/main` 指定源。

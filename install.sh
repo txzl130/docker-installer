@@ -4,7 +4,7 @@
 #
 # 用法：
 #   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh -o /tmp/i.sh
-#   sudo bash /tmp/i.sh                 # 不带参数 → 列出编号，输入编号（可多选）
+#   sudo bash /tmp/i.sh                 # 不带参数 → 先问目录，再列编号选工具（可多选）
 #   sudo bash /tmp/i.sh 1               # 按编号装（编号见 --list）
 #   sudo bash /tmp/i.sh emby-proxy-manager
 #   sudo bash /tmp/i.sh 1 2 --dir /opt/ysf/docker   # 装到统一根目录
@@ -21,6 +21,7 @@
 #   --dry-run           只下载/校验/解密/解压，不构建也不启动
 #   --no-start          只构建镜像，不启动容器
 #   --password-stdin    从标准输入读密码（不推荐，优先交互输入）
+#   -v, --verbose       显示下载源等细节（默认只显示友好进度）
 #   --base <URL>        只用指定的安装器来源（默认按 ghfast → raw → gh-proxy → jsDelivr 依次尝试）
 #   -h, --help          帮助
 #
@@ -31,7 +32,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.3.6"
+VERSION="1.4.0"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 # ⚠️ jsDelivr 必须放最后：它的 @main 缓存可能长期返回旧版本，
@@ -57,7 +58,7 @@ die()  { printf '%s[xx]%s %s\n' "$c_red" "$c_reset" "$*" >&2; exit 1; }
 usage() { awk 'NR==1{next} /^set -euo/{exit} {sub(/^# ?/,""); print}' "$0"; }
 
 PROJECT=""; ROOT_DIR=""; TARGET_DIR=""; CLEAN_SRC=0; DRY_RUN=0; LIST=0; PW_STDIN=0; NO_START=0
-UNINSTALL=0; ASSUME_YES=0
+UNINSTALL=0; ASSUME_YES=0; VERBOSE=0
 MODE=""          # fresh / upgrade / reinstall（空 = 自动判断）
 DIR_GIVEN=0
 PROJECTS=()
@@ -75,6 +76,7 @@ while [ $# -gt 0 ]; do
     --dry-run)        DRY_RUN=1; shift ;;
     --no-start)       NO_START=1; shift ;;
     --password-stdin) PW_STDIN=1; shift ;;
+    -v|--verbose)     VERBOSE=1; shift ;;
     --base)           BASE="${2:-}"; [ -n "$BASE" ] || die "--base 需要一个地址"; shift 2 ;;
     -h|--help)        usage; exit 0 ;;
     --version)        echo "docker-installer $VERSION"; exit 0 ;;
@@ -116,8 +118,8 @@ fetch() { # $1 = 项目内相对路径，$2 = 输出文件；成功后把可用�
     return $?
   fi
   for base in "${MIRRORS[@]}"; do
-    if fetch_one "$base/$rel" "$out"; then BASE="$base"; ok "下载源：$base"; return 0; fi
-    warn "这个源拉不动，换下一个：$base"
+    if fetch_one "$base/$rel" "$out"; then BASE="$base"; [ "$VERBOSE" = 1 ] && ok "下载源：$base"; return 0; fi
+    [ "$VERBOSE" = 1 ] && warn "这个源拉不动，换下一个：$base"
   done
   return 1
 }
@@ -193,18 +195,22 @@ fi
 # ---------- 交互能力检测 ----------
 # 直接运行脚本：stdin 是终端，正常交互。
 # 管道运行（curl ... | bash）：stdin 是脚本自身，但 /dev/tty 还在 → 所有提问走 /dev/tty。
+# ⚠️ 注意：TTY_FD 只能是「路径」，绝不能是数字 0。
+# 这里写成 0 会让 `printf > "$TTY_FD"` 变成 `> 0` —— 那会新建一个名叫 0 的文件，
+# 提示语被写进文件、紧接着 `read < "$TTY_FD"` 又从那个文件读回来，
+# 于是密码变成提示语、交互全部错乱（2026-11-08 在香港机上实测踩到）。
 TTY_FD=""
-if [ -t 0 ] && [ -t 1 ]; then
-  TTY_FD=0
-elif ( : >/dev/tty ) 2>/dev/null; then
+if ( : >/dev/tty ) 2>/dev/null; then
   TTY_FD=/dev/tty
+elif [ -t 0 ]; then
+  TTY_FD=/dev/stdin
 fi
 
 ask() { # $1=提示 $2=默认值 → 结果在 REPLY（回车用默认值）
   local def="${2:-}" ans="" prompt="$1"
   [ -n "$def" ] && prompt="$prompt [$def]"
   if [ -n "$TTY_FD" ]; then
-    printf '%s: ' "$prompt" > "$TTY_FD"
+    printf '%s: ' "$prompt" >&2
     IFS= read -r ans < "$TTY_FD" || ans=""
   fi
   [ -n "$ans" ] || ans="$def"
@@ -214,12 +220,20 @@ ask() { # $1=提示 $2=默认值 → 结果在 REPLY（回车用默认值）
 ask_secret() { # $1=提示 → 结果在 REPLY（不回显）
   local ans=""
   if [ -n "$TTY_FD" ]; then
-    printf '%s' "$1" > "$TTY_FD"
+    printf '%s' "$1" >&2
     IFS= read -rs ans < "$TTY_FD" || ans=""
-    printf '\n' > "$TTY_FD"
+    printf '\n' >&2
   fi
   REPLY="$ans"
 }
+
+# ---------- 统一安装根目录（先问，只问一次） ----------
+if [ "$DIR_GIVEN" = 0 ] && [ -n "$TTY_FD" ] && [ "$UNINSTALL" = 0 ]; then
+  echo
+  ask "安装根目录（每个项目一个子目录，直接回车=不改）" "${ROOT_DIR:-/opt/ysf/docker}"
+  ROOT_DIR="$REPLY"
+fi
+[ -n "$ROOT_DIR" ] || ROOT_DIR="/opt/ysf/docker"
 
 # ---------- 选项目：编号，可多选 ----------
 if [ "${#PROJECTS[@]}" -eq 0 ]; then
@@ -298,7 +312,7 @@ uninstall_one() {
     if [ -z "$TTY_FD" ]; then
       die "非交互环境删除目录必须加 --yes（会连同 data/ 里的数据、证书、登录密码一起删掉）"
     fi
-    printf '%s' "确定删除 $dir（含 data/ 数据、证书、登录密码）？(y/N) " > "$TTY_FD"
+    printf '%s' "确定删除 $dir（含 data/ 数据、证书、登录密码）？(y/N) " >&2
     IFS= read -r ans < "$TTY_FD" || ans=""
     case "$ans" in
       y|Y|yes|YES) ;;
@@ -344,13 +358,6 @@ fi
 
 need openssl; need tar; need sha256sum
 
-# ---------- 统一安装根目录（只问一次） ----------
-if [ "$DIR_GIVEN" = 0 ] && [ -n "$TTY_FD" ]; then
-  ask "安装根目录（每个项目一个子目录，直接回车=不改）" "${ROOT_DIR:-/opt/ysf/docker}"
-  ROOT_DIR="$REPLY"
-fi
-[ -n "$ROOT_DIR" ] || ROOT_DIR="/opt/ysf/docker"
-
 # ---------- 环境检查（只做一次） ----------
 if [ "$DRY_RUN" = 0 ]; then ensure_docker; fi
 
@@ -381,6 +388,7 @@ install_one() {
   local got bak cbak busy eff_ports first p img status n reply
 
   info "项目：$PROJECT"
+  info "正在下载安装包…"
   # project.conf 与安装包必须同源；而且各镜像的缓存新旧不一（jsDelivr / ghfast 都可能长期吃旧缓存）。
   # 危险的是「旧 conf + 旧包」本身是自洽的：校验和对得上，于是静默装成旧版本。
   # 所以先把所有源的 conf 都拉下来（带时间戳绕缓存），挑版本号最高的那个源，再用它装。
@@ -393,7 +401,7 @@ install_one() {
       [ -n "$cver" ] || cver="0"
       cands+=("$cver|$i|$base")
     else
-      warn "这个源拉不动，跳过：$base"
+      [ "$VERBOSE" = 1 ] && warn "这个源拉不动，跳过：$base"
     fi
     i=$((i + 1))
   done
@@ -417,16 +425,16 @@ install_one() {
     [ -n "$PKG" ] || { warn "$cbase 上的 project.conf 不完整，跳过"; continue; }
 
     if ! fetch_one "$cbase/projects/$PROJECT/$PKG" "$tmp/pkg.enc"; then
-      warn "这个源拿不到安装包，换下一个：$cbase"; continue
+      [ "$VERBOSE" = 1 ] && warn "这个源拿不到安装包，换下一个：$cbase"; continue
     fi
     if [ -n "$PKG_SHA256" ]; then
       got="$(sha256sum "$tmp/pkg.enc" | awk '{print $1}')"
       if [ "$got" != "$PKG_SHA256" ]; then
-        warn "$cbase 的包和校验和不一致（缓存问题），换下一个源"
+        [ "$VERBOSE" = 1 ] && warn "$cbase 的包和校验和不一致（缓存问题），换下一个源"
         continue
       fi
     fi
-    BASE="$cbase"; ok "下载源：$cbase"; fetched=1; break
+    BASE="$cbase"; [ "$VERBOSE" = 1 ] && ok "下载源：$cbase"; fetched=1; break
   done <<< "$sorted"
   [ "$fetched" = 1 ] || die "所有源都拿不到 $PROJECT 的可用安装包（可试试 --base 指定别的源）"
 

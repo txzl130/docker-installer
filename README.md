@@ -4,7 +4,7 @@
 
 ```bash
 # 推荐：先下载再运行（这样能交互选择项目、目录，也能自动装 Docker）
-curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh -o /tmp/i.sh
+curl -fsSL https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh -o /tmp/i.sh
 sudo bash /tmp/i.sh
 ```
 
@@ -41,11 +41,18 @@ bash /tmp/i.sh 1 --dry-run
 也可以直接管道执行（交互提示会从 `/dev/tty` 读，仍然可选项目/目录）：
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh | sudo bash -s -- 1
+curl -fsSL https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh | sudo bash -s -- 1
 ```
 
-> 国内服务器如果拉 `raw.githubusercontent.com` 很慢或卡住，用上面 jsDelivr 地址即可。
-> 脚本内部下载安装包时也会自动在 jsDelivr → ghfast → raw → gh-proxy 之间切换，并打印实际用的源。
+卸载（连容器、镜像、目录里的 `data/` 一起删；不加 `--yes` 会先问你）：
+
+```bash
+sudo bash /tmp/i.sh --uninstall 1
+```
+
+> **用 raw 地址，别用 jsDelivr 的 `@main`**：jsDelivr 缓存很顽固，改了脚本它还发旧版。
+> 国内拉 raw 慢就走代理：`https://ghfast.top/https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh`。
+> 脚本内部下载安装包时会自动在 jsDelivr → ghfast → raw → gh-proxy 之间切换（而且要求 conf 和包来自**同一个源**）。
 
 | 参数 | 作用 |
 |---|---|
@@ -54,6 +61,8 @@ curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh 
 | `--upgrade` | 强制按升级处理（默认：目录里已有 compose 文件就自动升级） |
 | `--reinstall` / `--force` | 整目录先备份成 `.bak.<时间>`，再按全新安装 |
 | `--clean-src` | 装完删源码，只留镜像和 `data/`（之后不能再重建） |
+| `-u` / `--uninstall` | 卸载：停容器 → 删容器 → 删目录（含 `data/`）→ 删镜像 |
+| `-y` / `--yes` | 删除类操作不再询问（非交互删除必须加） |
 | `--dry-run` | 只下载/校验/解密/解压 |
 | `--no-start` | 只构建镜像，不启动容器 |
 | `--password-stdin` | 从标准输入读密码（脚本化用） |
@@ -108,6 +117,14 @@ curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh 
 **提示"目标磁盘只剩 0 MB"**：这是 1.2.0 及更早的 bug（目标目录还不存在时 `df` 失败被当成 0），1.3.0 已修。
 
 **想重装**：`--reinstall`（=`--force`）会把旧目录备份成 `<目录>.bak.<时间>`。
+
+**装错地方了/想彻底删掉**：`bash i.sh --uninstall 1`（加 `--yes` 免确认）。升级留下的
+`*.code-*.tgz`、`*.bak.*` 备份不会被自动删，脚本会把路径列出来，确认没问题再手工删。
+
+**云服务器装完外面打不开**：机器上的端口是通的，但云厂商的**安全组/防火墙**默认只放几个端口。
+去控制台放行安装结束时打印的那几个端口（管理台 + 代理端口）。脚本管不到这一层。
+
+**2G 小内存机器构建很慢/失败**：加 1~2G swap 会好很多（因此脚本会提前检测并提示）。
 
 **jsDelivr 拿到的是旧脚本**：首发后 CDN 有缓存，用 `@<commit>` 固定版本的地址最稳，例如
 `https://cdn.jsdelivr.net/gh/txzl130/docker-installer@<7位提交号>/install.sh`。脚本启动时会打印「安装器版本」。

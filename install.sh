@@ -16,6 +16,8 @@
 #   --reinstall         重新安装：整个目录先备份成 .bak，再按全新安装（数据也会被带走）
 #   --force             --reinstall 的别名
 #   --clean-src         装好后删掉源码文件（只留镜像、data/、proxies/，之后不能再重建）
+#   -u, --uninstall     卸载：停止并删除容器、镜像和整个目录（含 data/ 数据、证书、密码）
+#   -y, --yes           删除/覆盖类操作不再询问（配合 --uninstall 的非交互使用）
 #   --dry-run           只下载/校验/解密/解压，不构建也不启动
 #   --no-start          只构建镜像，不启动容器
 #   --password-stdin    从标准输入读密码（不推荐，优先交互输入）
@@ -29,7 +31,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.3.1"
+VERSION="1.3.2"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 BASE="${INSTALLER_BASE:-}"
@@ -53,6 +55,7 @@ die()  { printf '%s[xx]%s %s\n' "$c_red" "$c_reset" "$*" >&2; exit 1; }
 usage() { awk 'NR==1{next} /^set -euo/{exit} {sub(/^# ?/,""); print}' "$0"; }
 
 PROJECT=""; ROOT_DIR=""; TARGET_DIR=""; CLEAN_SRC=0; DRY_RUN=0; LIST=0; PW_STDIN=0; NO_START=0
+UNINSTALL=0; ASSUME_YES=0
 MODE=""          # fresh / upgrade / reinstall（空 = 自动判断）
 DIR_GIVEN=0
 PROJECTS=()
@@ -65,6 +68,8 @@ while [ $# -gt 0 ]; do
     --reinstall)      MODE="reinstall"; shift ;;
     --force)          MODE="reinstall"; shift ;;
     --clean-src)      CLEAN_SRC=1; shift ;;
+    -u|--uninstall)   UNINSTALL=1; shift ;;
+    -y|--yes)         ASSUME_YES=1; shift ;;
     --dry-run)        DRY_RUN=1; shift ;;
     --no-start)       NO_START=1; shift ;;
     --password-stdin) PW_STDIN=1; shift ;;
@@ -256,11 +261,84 @@ if [ "$num_needed" = 1 ]; then
 fi
 [ "${#PROJECTS[@]}" -gt 0 ] || die "没选项目"
 
+# ---------- 卸载模式（--uninstall） ----------
+uninstall_one() {
+  local proj="$1" dir name="" conf_tmp k v img="" ans leftover
+  name="$proj"
+  conf_tmp="$(mktemp)"
+  if fetch "projects/$proj/project.conf" "$conf_tmp" 2>/dev/null; then
+    while IFS='=' read -r k v; do
+      case "$k" in NAME) [ -n "$v" ] && name="$v" ;; esac
+    done < "$conf_tmp"
+  fi
+  rm -f "$conf_tmp"
+  dir="$ROOT_DIR/$name"
+  case "$ROOT_DIR" in */"$name") dir="$ROOT_DIR" ;; esac
+
+  info "卸载：$name"
+  info "目录：$dir"
+  if [ ! -d "$dir" ]; then
+    warn "目录不存在，跳过：$dir"
+    return 0
+  fi
+  if command -v docker >/dev/null 2>&1 && [ -f "$dir/docker-compose.yml" ]; then
+    img="$( cd "$dir" && docker compose config --images 2>/dev/null | head -n1 || true )"
+    info "停止并删除容器"
+    ( cd "$dir" && docker compose down --remove-orphans ) || warn "docker compose down 失败（继续删目录）"
+  fi
+  if [ "$ASSUME_YES" != 1 ]; then
+    if [ -z "$TTY_FD" ]; then
+      die "非交互环境删除目录必须加 --yes（会连同 data/ 里的数据、证书、登录密码一起删掉）"
+    fi
+    printf '%s' "确定删除 $dir（含 data/ 数据、证书、登录密码）？(y/N) " > "$TTY_FD"
+    IFS= read -r ans < "$TTY_FD" || ans=""
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *) die "已取消，什么都没删" ;;
+    esac
+  fi
+  # 容器以 root 写的文件，普通用户 rm -rf 会 Permission denied → 用 busybox 容器兜底
+  if ! rm -rf "$dir" 2>/dev/null || [ -d "$dir" ]; then
+    rm -rf "$dir" 2>/dev/null || true
+    if [ -d "$dir" ]; then
+      warn "有的文件归 root（容器写的），改用 busybox 容器删"
+      # 注意要挂父目录、删子目录：挂载点本身删不掉
+      docker run --rm -v "$(dirname "$dir")":/x busybox rm -rf "/x/$(basename "$dir")" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [ -d "$dir" ]; then
+    warn "目录没删干净，请手工处理：sudo rm -rf '$dir'"
+  else
+    ok "已删除 $dir"
+    # 升级/重装留下的备份（.code-*.tgz / .bak.*）不会自动删，列出来让用户自己决定
+    leftover="$(ls -1d "$(dirname "$dir")/$(basename "$dir").code-"* "$(dirname "$dir")/$(basename "$dir").bak."* 2>/dev/null || true)"
+    if [ -n "$leftover" ]; then
+      warn "还留着备份（确认没问题后可删）："
+      printf '%s\n' "$leftover" | sed 's/^/    /' >&2
+    fi
+    rmdir "$ROOT_DIR" 2>/dev/null || true   # 根目录空了就一起清掉
+  fi
+  if [ -n "$img" ]; then
+    if docker rmi "$img" >/dev/null 2>&1; then ok "已删除镜像 $img"
+    else warn "镜像没删掉（可能还被别的容器用着）：$img"; fi
+  fi
+}
+
+if [ "$UNINSTALL" = 1 ]; then
+  [ -n "$ROOT_DIR" ] || ROOT_DIR="/opt/ysf/docker"
+  for pj in "${PROJECTS[@]}"; do
+    uninstall_one "$pj"
+    echo
+  done
+  ok "卸载完成"
+  exit 0
+fi
+
 need openssl; need tar; need sha256sum
 
 # ---------- 统一安装根目录（只问一次） ----------
 if [ "$DIR_GIVEN" = 0 ] && [ -n "$TTY_FD" ]; then
-  ask "所有项目都装到这个根目录下（每个项目一个子目录）" "${ROOT_DIR:-/opt/ysf/docker}"
+  ask "安装根目录（每个项目一个子目录，直接回车=不改）" "${ROOT_DIR:-/opt/ysf/docker}"
   ROOT_DIR="$REPLY"
 fi
 [ -n "$ROOT_DIR" ] || ROOT_DIR="/opt/ysf/docker"
@@ -291,7 +369,7 @@ install_one() {
   local PROJECT="$1"
   local NAME="" TITLE="" DIR_CONF="" PORTS="" ENV_FROM="" IMAGE="" CONTAINER=""
   local PKG="" PKG_SHA256="" TAR_SHA256="" NOTE="" PKG_VERSION=""
-  local INSTALLED_VERSION="" IS_EXISTING MODE PORTS_DISPLAY probedir avail_k
+  local INSTALLED_VERSION="" IS_EXISTING MODE PORTS_DISPLAY probedir avail_k mem_kb swap_kb
   local got bak cbak busy eff_ports first p img status n reply
 
   info "项目：$PROJECT"
@@ -376,14 +454,34 @@ install_one() {
     if [ -n "${avail_k:-}" ] && [ "$avail_k" -ge 0 ] 2>/dev/null && [ "$avail_k" -lt 2097152 ]; then
       warn "目标磁盘（$probedir）只剩 $((avail_k / 1024)) MB，可能不够构建（建议至少 2 GB）"
     fi
+    # 内存检查：小机器构建容易被 OOM 杀掉（2G 以下又没 swap 时最容易）
+    mem_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || true)"
+    swap_kb="$(awk '/^SwapTotal:/{print $2}' /proc/meminfo 2>/dev/null || true)"
+    if [ -n "${mem_kb:-}" ] && [ "${mem_kb:-0}" -lt 1500000 ] 2>/dev/null && [ "${swap_kb:-0}" -eq 0 ] 2>/dev/null; then
+      warn "内存只有 $((mem_kb / 1024)) MB 且没开 swap，构建可能很慢甚至失败（建议加 1~2G swap）"
+    fi
   fi
 
   # ---------- 解密 ----------
   info "解密"
-  if ! printf '%s' "$PW" | openssl enc -d -aes-256-cbc -pbkdf2 -iter "$ITER" \
-        -in "$tmp/pkg.enc" -out "$tmp/pkg.tar.gz" -pass stdin 2>/dev/null; then
-    die "解密失败：密码不对，或安装包损坏"
-  fi
+  local attempt=0 decrypted=0
+  while [ "$attempt" -lt 3 ]; do
+    attempt=$((attempt + 1))
+    if printf '%s' "$PW" | openssl enc -d -aes-256-cbc -pbkdf2 -iter "$ITER" \
+          -in "$tmp/pkg.enc" -out "$tmp/pkg.tar.gz" -pass stdin 2>/dev/null; then
+      decrypted=1; break
+    fi
+    # 只有「用户自己敲密码」时才有必要重试；环境变量/管道来的密码重试无意义
+    if [ -n "$TTY_FD" ] && [ "$PW_STDIN" != 1 ] && [ -z "${INSTALLER_PASSWORD:-}" ]; then
+      warn "密码不对（第 $attempt 次，共 3 次）"
+      ask_secret '再输一次安装密码（输入时看不到字符）：'
+      [ -n "$REPLY" ] || die "密码为空"
+      PW="$REPLY"
+    else
+      die "解密失败：密码不对，或安装包损坏"
+    fi
+  done
+  [ "$decrypted" = 1 ] || die "解密失败：密码不对，或安装包损坏"
   if [ -n "$TAR_SHA256" ]; then
     got="$(sha256sum "$tmp/pkg.tar.gz" | awk '{print $1}')"
     [ "$got" = "$TAR_SHA256" ] || die "解密后内容校验失败（安装包可能被替换）"
@@ -501,7 +599,11 @@ install_one() {
     done
     case "$status" in
       healthy|running) ok "容器状态：$status" ;;
-      *) warn "容器状态：$status（继续，排查：docker logs --tail 50 $CONTAINER）" ;;
+      *) warn "容器状态：$status（继续，排查：docker logs --tail 50 $CONTAINER）"
+         if [ -n "${cbak:-}" ]; then
+           echo "  回退旧版本（一行）："
+           echo "    tar -xzf '$cbak' -C '$(dirname "$TARGET_DIR")' && (cd '$TARGET_DIR' && docker compose up -d --force-recreate)"
+         fi ;;
     esac
   fi
 
@@ -539,6 +641,9 @@ install_one() {
   fi
   [ -n "$NOTE" ] && echo "  说明    $NOTE"
   [ -n "$ui_port" ] && echo "  访问    http://$ip:$ui_port"
+  if [ -n "$PORTS_DISPLAY" ]; then
+    echo "  放行    云服务器要在安全组/防火墙放行这些端口：${PORTS_DISPLAY//,/, }（否则外部打不开）"
+  fi
   echo "  日志    $DI_LOG"
 
   # ---------- 可选：清理源码 ----------

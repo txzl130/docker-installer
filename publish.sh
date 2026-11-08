@@ -173,7 +173,10 @@ pw_check="$(printf '%s' "$PW" | sha256sum | cut -c1-12)"
 # ---------- 写入仓库 ----------
 dest="$REPO_ROOT/projects/$NAME"
 mkdir -p "$dest"
-cp "$tmp/pkg.enc" "$dest/$NAME.tar.gz.enc"
+# 文件名带版本：每次发布都是新 URL，不会被 CDN 缓存的旧包顶替
+pkg_file="$NAME-$VER.tar.gz.enc"
+cp "$tmp/pkg.enc" "$dest/$pkg_file"
+rm -f "$dest/$NAME.tar.gz.enc"
 
 cat > "$dest/project.conf" <<EOF
 NAME=$NAME
@@ -184,7 +187,7 @@ PORTS=$PORTS
 ENV_FROM=$ENV_FROM
 IMAGE=$IMAGE
 CONTAINER=$CONTAINER
-PKG=$NAME.tar.gz.enc
+PKG=$pkg_file
 PKG_SHA256=$pkg_sha
 TAR_SHA256=$tar_sha
 PW_CHECK=$pw_check

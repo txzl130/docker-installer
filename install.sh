@@ -436,7 +436,7 @@ install_one() {
     fi
     BASE="$cbase"; [ "$VERBOSE" = 1 ] && ok "下载源：$cbase"; fetched=1; break
   done <<< "$sorted"
-  [ "$fetched" = 1 ] || die "所有源都拿不到 $PROJECT 的可用安装包（可试试 --base 指定别的源）"
+  [ "$fetched" = 1 ] || die "所有源都拿不到 $PROJECT 的可用安装包（多半是镜像还在缓存旧版本：等 1~2 分钟重跑，或加 --base 换一个源）"
 
   [ -n "$NAME" ] || NAME="$PROJECT"
 

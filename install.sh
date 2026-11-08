@@ -32,7 +32,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.4.5"
+VERSION="1.4.6"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 # ⚠️ jsDelivr 必须放最后：它的 @main 缓存可能长期返回旧版本，
@@ -846,11 +846,12 @@ offer_cert() {
   if bash "$tmp/cert.sh" "$domain" --dir "$ROOT_DIR" "${cert_extra[@]}" --no-install; then
     echo
     ok "证书签好了，并且已经按域名 $domain 放进项目里了"
-    echo "  接下来不用再跑任何命令。在管理台建代理时："
-    echo "    域名填 $domain，端口随便（比如 5088）"
-    echo "  保存后地址就是  https://$domain:5088   （HTTPS 会自动开，模式显示「本端口直接 HTTPS」）"
-    echo "  想用不带端口的地址：去「证书」页把这一行改成「跳转到共用 HTTPS 端口」，"
-    echo "    地址就变成 https://$domain （共用端口由 .env 的 HTTPS_PORT 决定，默认 443）"
+    echo "  现在这个域名能干两件事（都不用再跑命令）："
+    echo "    1) 打开管理台：https://$domain    （刚才它问的那一步选 y 就会开）"
+    echo "    2) 转发你的 Emby：在管理台「代理」页新增，域名填 $domain、端口随便（比如 5088），"
+    echo "       保存后地址就是 https://$domain:5088 （HTTPS 自动开，模式显示「本端口直接 HTTPS」）"
+    echo "  想不带端口转发 Emby：去「证书」页把那一行改成「跳转到共用 HTTPS 端口」，"
+    echo "    地址就是 https://$domain （共用端口由 .env 的 HTTPS_PORT 决定，默认 443）"
     if command -v crontab >/dev/null 2>&1; then
       if crontab -l 2>/dev/null | grep -q 'cert.sh --renew'; then
         ok "自动续期已经配好了（每天 3:30 检查，剩 30 天内才续）"

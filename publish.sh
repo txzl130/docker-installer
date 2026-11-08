@@ -168,6 +168,7 @@ fi
 verify_sha="$(sha256sum "$tmp/verify.tar.gz" | awk '{print $1}')"
 [ "$verify_sha" = "$tar_sha" ] || die "自检失败：解出来的内容和原包不一致，未写入仓库"
 ok "自检通过（解密后校验和一致）"
+pw_check="$(printf '%s' "$PW" | sha256sum | cut -c1-12)"
 
 # ---------- 写入仓库 ----------
 dest="$REPO_ROOT/projects/$NAME"
@@ -186,6 +187,7 @@ CONTAINER=$CONTAINER
 PKG=$NAME.tar.gz.enc
 PKG_SHA256=$pkg_sha
 TAR_SHA256=$tar_sha
+PW_CHECK=$pw_check
 NOTE=$NOTE
 EOF
 

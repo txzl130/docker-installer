@@ -501,6 +501,10 @@ install_one() {
           -in "$tmp/pkg.enc" -out "$tmp/pkg.tar.gz" -pass stdin 2>/dev/null; then
       decrypted=1; break
     fi
+    # 密码指纹对不上 = 这个包压根不是用这个密码加密的，重试没意义
+    if [ -n "${PW_CHECK:-}" ] && [ "$(printf '%s' "$PW" | sha256sum | cut -c1-12)" != "$PW_CHECK" ]; then
+      die "安装密码不对：这个安装包不是用这个密码加密的（发布时可能换了密码），请找维护者确认最新密码"
+    fi
     # 只有「用户自己敲密码」时才有必要重试；环境变量/管道来的密码重试无意义
     if [ -n "$TTY_FD" ] && [ "$PW_STDIN" != 1 ] && [ -z "${INSTALLER_PASSWORD:-}" ]; then
       warn "密码不对（第 $attempt 次，共 3 次）"

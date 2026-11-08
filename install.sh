@@ -32,7 +32,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.4.2"
+VERSION="1.4.3"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 # ⚠️ jsDelivr 必须放最后：它的 @main 缓存可能长期返回旧版本，

@@ -158,6 +158,17 @@ pkg_sha="$(sha256sum "$tmp/pkg.enc" | awk '{print $1}')"
 tar_sha="$(sha256sum "$tmp/pkg.tar.gz" | awk '{print $1}')"
 size="$(wc -c < "$tmp/pkg.enc" | tr -d ' ')"
 
+# ---------- 自检：用同一密码立刻解回来 ----------
+# 这一步很关键：曾经出现过「加密时用的密码和约定的不一样」，
+# 结果包能上传、SHA256 也自洽，安装时却永远「密码不对」。
+if ! printf '%s' "$PW" | openssl enc -d -aes-256-cbc -pbkdf2 -iter "$ITER" \
+      -in "$tmp/pkg.enc" -out "$tmp/verify.tar.gz" -pass stdin 2>/dev/null; then
+  die "自检失败：加密后的包用同一密码解不开（openssl 有问题），未写入仓库"
+fi
+verify_sha="$(sha256sum "$tmp/verify.tar.gz" | awk '{print $1}')"
+[ "$verify_sha" = "$tar_sha" ] || die "自检失败：解出来的内容和原包不一致，未写入仓库"
+ok "自检通过（解密后校验和一致）"
+
 # ---------- 写入仓库 ----------
 dest="$REPO_ROOT/projects/$NAME"
 mkdir -p "$dest"

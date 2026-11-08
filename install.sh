@@ -843,13 +843,29 @@ offer_cert() {
   [ -n "${ACME_EMAIL:-}" ] && cert_extra=(--email "$ACME_EMAIL")
   if bash "$tmp/cert.sh" "$domain" --dir "$ROOT_DIR" "${cert_extra[@]}" --no-install; then
     echo
-    ok "证书签好了：$ROOT_DIR/_certs/$domain/"
-    echo "  下一步把这张证书挂到代理上（会顺便告诉你最终访问地址）："
-    echo "    1) 管理台「代理」里把域名填成 $domain 并保存"
-    echo "    2) 跑一次：sudo bash $ROOT_DIR/cert.sh $domain"
-    echo "       （证书还有效，不会重复签；它只问你要挂到哪个代理，挂完打印访问地址，"
-    echo "         并问你要不要配自动续期）"
-    echo "    3) 管理台「证书」里把「HTTPS 模式」选成本端口直接 HTTPS，或跳转到共用 HTTPS 端口"
+    ok "证书签好了，并且已经按域名 $domain 放进项目里了"
+    echo "  接下来不用再跑任何命令。在管理台建代理时："
+    echo "    域名填 $domain，端口随便（比如 5088）"
+    echo "  保存后地址就是  https://$domain:5088   （HTTPS 会自动开，模式显示「本端口直接 HTTPS」）"
+    echo "  想用不带端口的地址：去「证书」页把这一行改成「跳转到共用 HTTPS 端口」，"
+    echo "    地址就变成 https://$domain （共用端口由 .env 的 HTTPS_PORT 决定，默认 443）"
+    if command -v crontab >/dev/null 2>&1; then
+      if crontab -l 2>/dev/null | grep -q 'cert.sh --renew'; then
+        ok "自动续期已经配好了（每天 3:30 检查，剩 30 天内才续）"
+      else
+        ask "要不要现在就把自动续期配上（每天 3:30 检查一次）？(Y/n)" "y"
+        case "${REPLY:-y}" in
+          n|N|no|NO) echo "  以后想配：sudo bash $ROOT_DIR/cert.sh --renew --dir $ROOT_DIR" ;;
+          *)
+            if (crontab -l 2>/dev/null; echo "30 3 * * * bash $ROOT_DIR/cert.sh --renew --dir $ROOT_DIR >>/var/log/cert-renew.log 2>&1") | crontab - 2>/dev/null; then
+              ok "自动续期已配好（每天 3:30 检查，剩 30 天内自动续）"
+            else
+              warn "配 crontab 失败，请手动加：30 3 * * * bash $ROOT_DIR/cert.sh --renew --dir $ROOT_DIR"
+            fi
+            ;;
+        esac
+      fi
+    fi
   else
     warn "这次没签成（不影响已经装好的服务）。稍后重试：sudo bash $ROOT_DIR/cert.sh $domain"
   fi

@@ -351,7 +351,37 @@ print_access() {
 }
 
 # ============================================================================
-# 装到项目里（目前支持 emby-proxy-manager 这类 data/certs/<代理名>/ 的结构）
+# 按域名放进每个项目（data/certs/_domains/<域名>/）：代理只要填了同名域名就自动认领，
+# 不用再把证书「挂到某个代理名下」，也不用再跑一遍脚本。
+# ============================================================================
+spread_by_domain() {
+  local d="$1" src="$2" pj pjn found=0 sd
+  [ -d "$src" ] || return 0
+  # 目录名必须和项目里的 safeName() 一致：非 [a-zA-Z0-9_-] 一律换成 _
+  sd="$(printf '%s' "$d" | sed 's/[^a-zA-Z0-9_-]/_/g')"
+  for pj in "$ROOT_DIR"/*/; do
+    [ -f "$pj/docker-compose.yml" ] || continue
+    [ -d "$pj/data/certs" ] || continue
+    mkdir -p "$pj/data/certs/_domains/$sd"
+    cp -f "$src/fullchain.pem" "$src/privkey.pem" "$pj/data/certs/_domains/$sd/"
+    chmod 600 "$pj/data/certs/_domains/$sd/privkey.pem" 2>/dev/null || true
+    printf '{"domain":"%s","provider":"cert.sh","expiresAt":"%s"}\n' "$d" "$expires_iso" \
+      > "$pj/data/certs/_domains/$sd/meta.json"
+    pjn="$(basename "$pj")"
+    found=1
+    ok "已按域名放进 $pjn（代理填 $d 就会自动用上，不用再跑命令）"
+    if docker compose -f "$pj/docker-compose.yml" --project-directory "$pj" ps --status running >/dev/null 2>&1; then
+      docker exec "$pjn" sh -c 'node /app/scripts/generate.js' >/dev/null 2>&1 &&
+        docker exec "$pjn" nginx -s reload >/dev/null 2>&1 || true
+    fi
+  done
+  return 0
+}
+
+spread_by_domain "$DOMAIN" "$CERT_DIR"
+
+# ============================================================================
+# 装到某个具体代理名下（可选；按域名认领之后一般不需要了）
 # ============================================================================
 [ "$NO_INSTALL" = 1 ] && exit 0
 

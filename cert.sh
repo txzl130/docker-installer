@@ -381,6 +381,76 @@ spread_by_domain() {
 spread_by_domain "$DOMAIN" "$CERT_DIR"
 
 # ============================================================================
+# 管理台自己也能用这个域名走 HTTPS（空项目、还没建任何代理时也能打开）
+# ============================================================================
+offer_admin_https() {
+  local d="$1" pj pjn n=0 target="" https_port envf answer
+  for pj in "$ROOT_DIR"/*/; do
+    [ -f "$pj/docker-compose.yml" ] || continue
+    [ -d "$pj/data/certs" ] || continue
+    n=$((n + 1)); target="$pj"
+  done
+  [ "$n" -gt 0 ] || return 0
+
+  if [ "$n" -gt 1 ]; then
+    say "把管理台挂到这个域名的项目选哪个："
+    local i=0
+    for pj in "$ROOT_DIR"/*/; do
+      [ -f "$pj/docker-compose.yml" ] || continue
+      [ -d "$pj/data/certs" ] || continue
+      i=$((i + 1)); say "  $i  $(basename "$pj")"
+      [ "$i" = 1 ] && first_pj="$pj"
+    done
+    ask "输入编号（直接回车=1）" "1"
+    local pick="${REPLY:-1}"
+    i=0
+    for pj in "$ROOT_DIR"/*/; do
+      [ -f "$pj/docker-compose.yml" ] || continue
+      [ -d "$pj/data/certs" ] || continue
+      i=$((i + 1)); [ "$i" = "$pick" ] && target="$pj"
+    done
+    [ -n "$target" ] || target="$first_pj"
+  fi
+
+  pjn="$(basename "${target%/}")"
+  envf="${target%/}/.env"
+  https_port="$(grep -E '^HTTPS_PORT=' "$envf" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '\r ')"
+
+  echo
+  ask "要不要把管理台也挂到这个域名上（https://$d 直接打开管理台，不用带端口）？(Y/n)" "y"
+  case "${REPLY:-y}" in
+    n|N|no|NO) echo "  好，只放证书。以后想开：在 $envf 里加 UI_DOMAIN=$d 再重启容器" ; return 0 ;;
+  esac
+
+  mkdir -p "$(dirname "$envf")"; touch "$envf"
+  if grep -q '^UI_DOMAIN=' "$envf"; then
+    sed -i "s|^UI_DOMAIN=.*|UI_DOMAIN=$d|" "$envf"
+  elif grep -q '^#UI_DOMAIN=' "$envf"; then
+    sed -i "s|^#UI_DOMAIN=.*|UI_DOMAIN=$d|" "$envf"
+  else
+    printf '\n# 管理台走 HTTPS 的域名（由 cert.sh 写入）\nUI_DOMAIN=%s\n' "$d" >> "$envf"
+  fi
+  if ! grep -q '^HTTPS_PORT=' "$envf"; then
+    printf 'HTTPS_PORT=443\n' >> "$envf"
+  fi
+
+  info "重启容器让管理台走 HTTPS（约 5 秒，配置和数据都不动）"
+  if ( cd "${target%/}" && docker compose up -d --no-build --force-recreate ) >/dev/null 2>&1; then
+    ok "管理台已挂上 HTTPS"
+    if [ -n "$https_port" ] && [ "$https_port" != "443" ]; then
+      ok "管理台地址：https://$d:$https_port"
+    else
+      ok "管理台地址：https://$d"
+    fi
+    echo "  打开就是管理台登录页；证书由证书目录里的同名域名证书提供"
+  else
+    warn "重启容器失败，请手动：cd ${target%/} && docker compose up -d --force-recreate"
+  fi
+}
+
+offer_admin_https "$DOMAIN"
+
+# ============================================================================
 # 装到某个具体代理名下（可选；按域名认领之后一般不需要了）
 # ============================================================================
 [ "$NO_INSTALL" = 1 ] && exit 0

@@ -32,7 +32,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.4.3"
+VERSION="1.4.4"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 # ⚠️ jsDelivr 必须放最后：它的 @main 缓存可能长期返回旧版本，
@@ -801,6 +801,15 @@ offer_cert() {
   done
   [ "$have" = 1 ] || return 0
 
+  # 不管这次签不签，都先把 cert.sh 放到安装根目录，方便以后随时跑
+  tmp="$(mktemp -d)"
+  if fetch "cert.sh" "$tmp/cert.sh" 2>/dev/null; then
+    cp -f "$tmp/cert.sh" "$ROOT_DIR/cert.sh" 2>/dev/null || true
+    chmod +x "$ROOT_DIR/cert.sh" 2>/dev/null || true
+  else
+    warn "拉不到 cert.sh（不影响安装；以后可手动下载到 $ROOT_DIR/cert.sh）"
+  fi
+
   echo
   info "顺手把 HTTPS 也办了？（可选，直接回车 = 先不签）"
   echo "  不填服务商密钥、不停现有网站：80 端口空着就直接签，被别的网站占着就借用它的目录。"
@@ -829,14 +838,6 @@ offer_cert() {
       *) warn "域名中间要有点（像 emby.abc.com 这样），重新输入"; continue ;;
     esac
   done
-
-  tmp="$(mktemp -d)"
-  if ! fetch "cert.sh" "$tmp/cert.sh"; then
-    warn "拉不到 cert.sh（不影响安装）"
-    rm -rf "$tmp"; return 0
-  fi
-  cp -f "$tmp/cert.sh" "$ROOT_DIR/cert.sh" 2>/dev/null || true
-  chmod +x "$ROOT_DIR/cert.sh" 2>/dev/null || true
 
   echo
   cert_extra=()

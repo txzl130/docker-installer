@@ -31,7 +31,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.3.2"
+VERSION="1.3.3"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 BASE="${INSTALLER_BASE:-}"
@@ -537,6 +537,27 @@ install_one() {
     ok "已生成 .env（来自 $ENV_FROM，可自行修改）"
   fi
 
+  # ---------- 管理台是否对外开放 ----------
+  # 项目默认 UI_BIND=127.0.0.1（安全，但外部打不开）；这里问一次，省得装完一脸问号
+  BIND_LOOPBACK=0
+  if [ -f "$TARGET_DIR/.env" ]; then
+    cur_bind="$(grep -E '^UI_BIND=' "$TARGET_DIR/.env" | tail -n1 | cut -d= -f2- | tr -d '\r' || true)"
+    if [ "$cur_bind" = "127.0.0.1" ]; then
+      want_open=0
+      if [ -n "$TTY_FD" ] && [ "$ASSUME_YES" != 1 ] && [ "$MODE" != "upgrade" ]; then
+        ask "管理台要不要允许公网访问（改成 0.0.0.0，走 http 明文；n = 只本机 + SSH 隧道）" "n"
+        case "$REPLY" in y|Y|yes|YES) want_open=1 ;; esac
+      fi
+      if [ "$want_open" = 1 ]; then
+        sed -i 's/^UI_BIND=.*/UI_BIND=0.0.0.0/' "$TARGET_DIR/.env"
+        ok "管理台已允许公网访问（UI_BIND=0.0.0.0）"
+      else
+        BIND_LOOPBACK=1
+        info "管理台只绑本机；外部访问请走 SSH 隧道：ssh -L 9000:127.0.0.1:9000 root@<服务器IP>"
+      fi
+    fi
+  fi
+
   # ---------- 端口预检 ----------
   eff_ports=""
   if [ -n "$PORTS" ]; then
@@ -611,9 +632,15 @@ install_one() {
   echo "$PKG_VERSION" > "$TARGET_DIR/.installed-version" 2>/dev/null || true
 
   # ---------- 输出结果 ----------
-  local ip ui_port
+  local ip ui_port pub
   ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
   [ -n "$ip" ] || ip="<本机IP>"
+  # 云服务器大多是 NAT：hostname -I 给的是 10.x/172.x 内网地址，外面访问不到 → 问一次公网 IP
+  case "$ip" in
+    10.*|127.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
+      pub="$(curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || curl -4 -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true)"
+      [ -n "$pub" ] && ip="$pub" ;;
+  esac
   ui_port="${UI_PORT:-${PORTS%%,*}}"
   PORTS_DISPLAY="$PORTS"
   if [ -n "${UI_PORT:-}" ] && [ -n "$PORTS" ]; then
@@ -640,7 +667,11 @@ install_one() {
     [ -n "$token" ] && echo "  ${token}"
   fi
   [ -n "$NOTE" ] && echo "  说明    $NOTE"
-  [ -n "$ui_port" ] && echo "  访问    http://$ip:$ui_port"
+  if [ "$BIND_LOOPBACK" = 1 ]; then
+    echo "  访问    仅本机：ssh -L 9000:127.0.0.1:9000 root@$ip  然后浏览器开 http://127.0.0.1:9000"
+  else
+    [ -n "$ui_port" ] && echo "  访问    http://$ip:$ui_port"
+  fi
   if [ -n "$PORTS_DISPLAY" ]; then
     echo "  放行    云服务器要在安全组/防火墙放行这些端口：${PORTS_DISPLAY//,/, }（否则外部打不开）"
   fi

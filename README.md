@@ -18,26 +18,30 @@ sudo bash /tmp/i.sh
 ## 用法
 
 ```bash
-# 最省事：不带参数，脚本会列出项目、问你要装哪个、装到哪个目录
+# 最省事：不带参数 → 列出编号，输入编号（可多选，如 1 3），再问一次根目录
 sudo bash /tmp/i.sh
 
-# 看有哪些项目
+# 直接按编号装（编号见 --list），可一次装多个
+sudo bash /tmp/i.sh 1
+sudo bash /tmp/i.sh 1 2 --dir /opt/ysf/docker
+
+# 看有哪些项目（带编号）
 bash /tmp/i.sh --list
 
-# 直接指定项目和目录（非交互，适合脚本化）
-sudo bash /tmp/i.sh emby-proxy-manager --dir /opt/ysf/docker/emby-proxy-manager
-
-# 已经装过的目录：同一条命令会自动识别成「升级」，data/、proxies/、.env 都保留
-sudo bash /tmp/i.sh emby-proxy-manager --dir /opt/ysf/docker/emby-proxy-manager
+# 已经装过的项目：同一条命令会自动识别成「升级」，data/、proxies/、.env 都保留
+sudo bash /tmp/i.sh 1
 
 # 只看会做什么，不构建不启动
-bash /tmp/i.sh emby-proxy-manager --dry-run
+bash /tmp/i.sh 1 --dry-run
 ```
+
+**目录规则**：`--dir` 是**统一根目录**（默认 `/opt/ysf/docker`），每个项目装到 `<根目录>/<项目名>`。
+不需要为每个项目单独选目录；根目录只在开头问一次。
 
 也可以直接管道执行（交互提示会从 `/dev/tty` 读，仍然可选项目/目录）：
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh | sudo bash -s -- emby-proxy-manager
+curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh | sudo bash -s -- 1
 ```
 
 > 国内服务器如果拉 `raw.githubusercontent.com` 很慢或卡住，用上面 jsDelivr 地址即可。
@@ -45,8 +49,8 @@ curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh 
 
 | 参数 | 作用 |
 |---|---|
-| `--list` | 列出所有项目（带版本号） |
-| `--dir <路径>` | 安装目录（不给就交互询问，回车用默认值） |
+| `--list` | 列出所有项目（带编号、版本号） |
+| `--dir <路径>` | 统一安装根目录（默认 `/opt/ysf/docker`；不给会交互询问） |
 | `--upgrade` | 强制按升级处理（默认：目录里已有 compose 文件就自动升级） |
 | `--reinstall` / `--force` | 整目录先备份成 `.bak.<时间>`，再按全新安装 |
 | `--clean-src` | 装完删源码，只留镜像和 `data/`（之后不能再重建） |
@@ -64,14 +68,13 @@ curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh 
 
 ```bash
 ./publish.sh <项目名> <源码目录> \
-  --title "显示名" --dir /opt/ysf/docker/<项目名> \
-  --ports 9000,5088 --container <容器名> --image <镜像tag> \
-  --env-from .env.example
+  --title "显示名" --ports 9000,5088 \
+  --container <容器名> --image <镜像tag> --env-from .env.example
 ```
 
 3. 它会：打包（自动排除 `.env`/`data/`/证书/日志）→ 扫凭据 → 加密 → 写 `projects/<名字>/` → 重新生成 `projects/list.txt` → 提交并推送。
 
-`install.sh` 不需要改。
+`install.sh` 不需要改；编号是自动按 `list.txt` 顺序生成的。
 
 ## 安全说明（务必看）
 
@@ -100,6 +103,11 @@ curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh 
 
 **`docker compose build` 失败、报 DNS 或 apk 错误**：这台机器的 bridge 网络出不了网。`install.sh` 会自动回退到 `docker build --network host`；如果还失败，手动执行那条命令。
 
-**端口被占用**：先看 `ss -ltnp`，改 `.env` 或项目的 `LISTEN_PORT`。
+**端口被占用**：安装前会预检并直接告诉你。可以 `UI_PORT=19000 HEALTH_PORT=18080 bash install.sh 1` 换端口，或装完改 `.env`。
 
-**想重装**：`--force` 会把旧目录备份成 `<目录>.bak.<时间>`。
+**提示"目标磁盘只剩 0 MB"**：这是 1.2.0 及更早的 bug（目标目录还不存在时 `df` 失败被当成 0），1.3.0 已修。
+
+**想重装**：`--reinstall`（=`--force`）会把旧目录备份成 `<目录>.bak.<时间>`。
+
+**jsDelivr 拿到的是旧脚本**：首发后 CDN 有缓存，用 `@<commit>` 固定版本的地址最稳，例如
+`https://cdn.jsdelivr.net/gh/txzl130/docker-installer@<7位提交号>/install.sh`。脚本启动时会打印「安装器版本」。

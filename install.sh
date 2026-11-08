@@ -32,7 +32,7 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.4.4"
+VERSION="1.4.5"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
 # ⚠️ jsDelivr 必须放最后：它的 @main 缓存可能长期返回旧版本，
@@ -760,6 +760,7 @@ install_one() {
   fi
   if [ -n "$PORTS_DISPLAY" ]; then
     echo "  放行    云服务器要在安全组/防火墙放行这些端口：${PORTS_DISPLAY//,/, }（否则外部打不开）"
+    echo "          上面只有这个程序自己的端口；以后建代理用到的端口（比如 5088），到时候再放行"
   fi
   echo "  日志    $DI_LOG"
 

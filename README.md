@@ -18,7 +18,14 @@ sudo bash /tmp/i.sh
 ## 用法
 
 ```bash
-# 最省事：不带参数 → 列出编号，输入编号（可多选，如 1 3），再问一次根目录
+# 最省事：不带参数，一路回车
+#   先问根目录 → 列出编号选项目（可多选，如 1 3）→ 密码
+#   装完可以顺手签一张 HTTPS 证书（只需一个域名，不用邮箱、不用服务商密钥）
+sudo bash /tmp/i.sh
+
+# 这台机器上已经装过东西时，开头会多问一句：
+#   这台机器上已经有： emby-proxy-manager 版本 1.1.2
+#   要做什么？ 1=安装/升级（默认）  2=卸载
 sudo bash /tmp/i.sh
 
 # 直接按编号装（编号见 --list），可一次装多个
@@ -44,7 +51,8 @@ bash /tmp/i.sh 1 --dry-run
 curl -fsSL https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh | sudo bash -s -- 1
 ```
 
-卸载（连容器、镜像、目录里的 `data/` 一起删；不加 `--yes` 会先问你）：
+卸载（连容器、镜像、目录里的 `data/` 一起删；不加 `--yes` 会先问你）。
+两种方式等价：交互菜单里选 `2`，或者直接给参数：
 
 ```bash
 sudo bash /tmp/i.sh --uninstall 1
@@ -95,7 +103,7 @@ sudo bash /tmp/i.sh --uninstall 1
 sudo bash /opt/ysf/docker/cert.sh emby.你的域名.com
 ```
 
-它自己判断怎么验证：
+**不需要邮箱**（Let's Encrypt 不强制），也不需要 Cloudflare/阿里云的密钥。它自己判断怎么验证：
 
 | 80 端口情况 | 做法 |
 |---|---|

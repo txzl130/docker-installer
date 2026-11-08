@@ -3,7 +3,7 @@
 # 仓库：https://github.com/txzl130/docker-installer
 #
 # 用法：
-#   curl -fsSL https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main/install.sh -o /tmp/i.sh
+#   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/txzl130/docker-installer/main/install.sh -o /tmp/i.sh
 #   sudo bash /tmp/i.sh                 # 不带参数 → 列出编号，输入编号（可多选）
 #   sudo bash /tmp/i.sh 1               # 按编号装（编号见 --list）
 #   sudo bash /tmp/i.sh emby-proxy-manager
@@ -21,7 +21,7 @@
 #   --dry-run           只下载/校验/解密/解压，不构建也不启动
 #   --no-start          只构建镜像，不启动容器
 #   --password-stdin    从标准输入读密码（不推荐，优先交互输入）
-#   --base <URL>        只用指定的安装器来源（默认按 jsDelivr → ghfast → raw 依次尝试）
+#   --base <URL>        只用指定的安装器来源（默认按 ghfast → raw → gh-proxy → jsDelivr 依次尝试）
 #   -h, --help          帮助
 #
 # 环境变量：
@@ -31,15 +31,17 @@
 #   UI_PORT / HEALTH_PORT  覆盖项目默认端口（9000、8080 被占用时最常用）
 set -euo pipefail
 
-VERSION="1.3.4"
+VERSION="1.3.5"
 # 安装器根地址：显式指定（--base / INSTALLER_BASE）时只用它；
 # 否则按下面的镜像列表依次尝试 —— 国内直连 raw.githubusercontent.com 经常拉不动。
+# ⚠️ jsDelivr 必须放最后：它的 @main 缓存可能长期返回旧版本，
+#    而且「旧 project.conf + 旧加密包」是自洽的，校验和能对上，会静默装成旧版。
 BASE="${INSTALLER_BASE:-}"
 MIRRORS=(
-  "https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main"
   "https://ghfast.top/https://raw.githubusercontent.com/txzl130/docker-installer/main"
   "https://raw.githubusercontent.com/txzl130/docker-installer/main"
   "https://gh-proxy.com/https://raw.githubusercontent.com/txzl130/docker-installer/main"
+  "https://cdn.jsdelivr.net/gh/txzl130/docker-installer@main"
 )
 ITER="${INSTALLER_PBKDF2_ITER:-600000}"
 

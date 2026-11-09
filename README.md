@@ -91,7 +91,20 @@ sudo bash /tmp/i.sh --uninstall 1
   --container <容器名> --image <镜像tag> --env-from .env.example
 ```
 
-3. 它会：打包（自动排除 `.env`/`data/`/证书/日志）→ 扫凭据 → 加密 → 写 `projects/<名字>/` → 重新生成 `projects/list.txt` → 提交并推送。
+**如果这个项目要挂在 443 总入口后面**，再加两个参数：
+
+```bash
+  --upstream http://127.0.0.1:8845 \
+  --ask "TMDB_READ_TOKEN=TMDB v4 Token（必填，xxx）" \
+  --ask "APP_TOKEN=App 调用口令（必填，自己定一串）"
+```
+
+| 参数 | 作用 |
+|---|---|
+| `--upstream <地址>` | 装完问一句域名 → 自动签证书 → 自动 `gateway.sh add` 接到 443 入口 → 打印 `https://域名` |
+| `--ask "<VAR>=<提示>"` | 装的时候必须填的参数（可重复），会写进那个项目的 `.env`；升级时已有值就跳过不问 |
+
+3. 它会：打包（自动排除 `.env`/`data/`/`dl/`/证书/日志）→ 扫凭据 → 加密 → 写 `projects/<名字>/` → 重新生成 `projects/list.txt` → 提交并推送。
 
 `install.sh` 不需要改；编号是自动按 `list.txt` 顺序生成的。
 

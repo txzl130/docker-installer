@@ -802,13 +802,19 @@ offer_cert() {
   done
   [ "$have" = 1 ] || return 0
 
-  # 不管这次签不签，都先把 cert.sh 放到安装根目录，方便以后随时跑
+  # 不管这次签不签，都先把 cert.sh / gateway.sh 放到安装根目录，方便以后随时跑
   tmp="$(mktemp -d)"
   if fetch "cert.sh" "$tmp/cert.sh" 2>/dev/null; then
     cp -f "$tmp/cert.sh" "$ROOT_DIR/cert.sh" 2>/dev/null || true
     chmod +x "$ROOT_DIR/cert.sh" 2>/dev/null || true
   else
     warn "拉不到 cert.sh（不影响安装；以后可手动下载到 $ROOT_DIR/cert.sh）"
+  fi
+  if fetch "gateway.sh" "$tmp/gateway.sh" 2>/dev/null; then
+    cp -f "$tmp/gateway.sh" "$ROOT_DIR/gateway.sh" 2>/dev/null || true
+    chmod +x "$ROOT_DIR/gateway.sh" 2>/dev/null || true
+  else
+    warn "拉不到 gateway.sh（不影响安装）"
   fi
 
   echo

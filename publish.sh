@@ -206,6 +206,7 @@ PKG=$pkg_file
 PKG_SHA256=$pkg_sha
 TAR_SHA256=$tar_sha
 PW_CHECK=$pw_check
+PUBLISHED=$(date -u +%Y%m%d%H%M%S)
 NOTE=$NOTE
 EOF
 

@@ -452,21 +452,25 @@ install_one() {
   # 所以先把所有源的 conf 都拉下来（带时间戳绕缓存），挑版本号最高的那个源，再用它装。
   local bases=() base fetched=0
   if [ -n "$BASE" ]; then bases=("$BASE"); else bases=("${MIRRORS[@]}"); fi
-  local i=0 cands=() cver cbase sorted
+  local i=0 cands=() cver cbase sorted cpub
   for base in "${bases[@]}"; do
     if fetch_one "$base/projects/$PROJECT/project.conf" "$tmp/conf.$i"; then
       cver="$(sed -n 's/^VERSION=//p' "$tmp/conf.$i" | head -n1 | tr -d '\r')"
       [ -n "$cver" ] || cver="0"
-      cands+=("$cver|$i|$base")
+      # 同版本号的坑：改过 project.conf 却没升 VERSION 时，CDN 上的新旧 conf 版本一样，
+      # 于是可能命中旧的那份（少字段）。用 PUBLISHED 时间戳做第二排序键。
+      cpub="$(sed -n 's/^PUBLISHED=//p' "$tmp/conf.$i" | head -n1 | tr -d '\r')"
+      [ -n "$cpub" ] || cpub="0"
+      cands+=("$cver|$cpub|$i|$base")
     else
       [ "$VERBOSE" = 1 ] && warn "这个源拉不动，跳过：$base"
     fi
     i=$((i + 1))
   done
   [ "${#cands[@]}" -gt 0 ] || die "所有源都拿不到 $PROJECT 的 project.conf（可试试 --base 指定别的源）"
-  sorted="$(printf '%s\n' "${cands[@]}" | sort -t'|' -k1,1Vr)"
+  sorted="$(printf '%s\n' "${cands[@]}" | sort -t'|' -k1,1Vr -k2,2r)"
 
-  while IFS='|' read -r cver i cbase; do
+  while IFS='|' read -r cver cpub i cbase; do
     [ -n "$cbase" ] || continue
     cp -f "$tmp/conf.$i" "$tmp/project.conf"
     # 读取元数据（只认 KEY=VALUE，不执行里面的任何命令）
@@ -1000,6 +1004,7 @@ offer_emby_cert() {
   [ -n "$DOMAIN_PICK" ] || { echo "  好，先不签。以后：sudo bash $ROOT_DIR/cert.sh 你的域名"; return 0; }
 
   local d="$DOMAIN_PICK" cert_extra=()
+  ensure_cert_tools      # 没签过证书时 cert.sh 可能还没落地，先确保它在
   [ -n "${ACME_EMAIL:-}" ] && cert_extra=(--email "$ACME_EMAIL")
   if bash "$ROOT_DIR/cert.sh" "$d" --dir "$ROOT_DIR" "${cert_extra[@]}" --no-install; then
     ok "证书签好了，并且已经按域名 $d 放进项目里了"

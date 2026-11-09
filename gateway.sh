@@ -292,7 +292,7 @@ cmd_cert() {
   [ -n "$domain" ] || die "用法：gateway.sh cert <域名>"
   local d; d="$(dirname "${BASH_SOURCE[0]}")"
   [ -f "$d/cert.sh" ] || die "找不到 $d/cert.sh（它应该在安装根目录）"
-  bash "$d/cert.sh" "$domain" --dir "$ROOT_DIR" --no-install
+  bash "$d/cert.sh" "$domain" --dir "$ROOT_DIR" --no-install --no-admin
 }
 
 cmd_status() {

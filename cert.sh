@@ -17,6 +17,7 @@
 #     --webroot <路径>   手动指定网站目录（跳过自动查找）
 #     --staging          用测试环境签（不消耗正式额度，用来验证流程）
 #     --no-install       只签不发，不提示装到项目里
+#     --no-admin         不要动管理台域名（给别的容器签证书时用）
 #     -v, --verbose      显示细节
 #     -h, --help         看这段说明
 #
@@ -34,6 +35,7 @@ EMAIL="${ACME_EMAIL:-}"
 WEBROOT=""
 STAGING=0
 NO_INSTALL=0
+NO_ADMIN=0
 FORCE=0
 VERBOSE=0
 RENEW=0
@@ -58,6 +60,7 @@ while [ $# -gt 0 ]; do
     --staging)    STAGING=1; shift ;;
     --force)      FORCE=1; shift ;;
     --no-install) NO_INSTALL=1; shift ;;
+    --no-admin)   NO_ADMIN=1; shift ;;
     --renew)      RENEW=1; shift ;;
     -v|--verbose) VERBOSE=1; shift ;;
     -h|--help)    usage ;;
@@ -448,7 +451,7 @@ offer_admin_https() {
   fi
 }
 
-offer_admin_https "$DOMAIN"
+[ "$NO_ADMIN" = 0 ] && offer_admin_https "$DOMAIN"
 
 # ============================================================================
 # 装到某个具体代理名下（可选；按域名认领之后一般不需要了）

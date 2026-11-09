@@ -139,15 +139,74 @@ sudo bash /opt/ysf/docker/cert.sh emby.你的域名.com
 | 本端口直接 HTTPS | `https://域名:5088`（就是代理自己的端口） | 该端口的明文 http 会 400 |
 | 跳转到共用 HTTPS 端口 | `https://域名` 或 `https://域名:8443` | 端口由 `.env` 的 `HTTPS_PORT` 决定，`443` 时地址里不带端口 |
 
-⚠️ **一台机器上 443 只能被一个程序占着**。多个容器各自监听 443 会冲突：
-要么各自用自己的端口（像上面 5088），要么在一台机器上只留**一个**入口（nginx / Caddy / Cloudflare Tunnel）
-按域名分流到各个容器。cert.sh 不替你抢 443，它只管把证书签好、放好、让项目自动 reload。
+⚠️ **一台机器上 443 只能被一个程序占着**。多个容器各自监听 443 会冲突 —— 解决办法就是用下面的
+「HTTPS 总入口」（`gateway.sh`）：一个很小的 nginx 容器独占 443，按域名把请求分给各个项目。
 
 证书放在 `/opt/ysf/docker/_certs/<域名>/`；装到项目后同时写进 `data/certs/<代理名>/`，并自动重新生成 nginx 配置、reload 生效。
 
-常用参数：`--staging`（测试签发，不消耗正式额度）、`--force`（强制重签）、`--no-install`（只签不装）、`--renew`（续期）、`--dir`（改了根目录时用）、`-v`（显示细节）。
+常用参数：`--staging`（测试签发，不消耗正式额度）、`--force`（强制重签）、`--no-install`（只签不装）、`--no-admin`（不要动管理台域名）、`--renew`（续期）、`--dir`（改了根目录时用）、`-v`（显示细节）。
 
 > 域名必须真的解析到这台机器、且 80 端口能从公网访问，否则验证过不了。云服务器记得在安全组放行 80。
+
+
+## 多个项目共用 443（gateway.sh）
+
+一台机器只能有一个程序监听 443。装了第二个项目就会撞车，这时用「HTTPS 总入口」：
+
+```
+浏览器 ──https://emby.a.com──┐
+                             ├─→ [https-gateway :443] ─→ 项目A 127.0.0.1:8843
+浏览器 ──https://tv.a.com────┘                         └─→ 项目B 127.0.0.1:8844
+```
+
+入口只占 443（**不占 80**，80 留给 cert.sh 验证用），证书集中在 `<根>/_certs/`，按域名（SNI）分发。
+没配置的域名直接断开握手（`ssl_reject_handshake`），不暴露任何信息。
+
+### 什么时候用
+
+- 只有一个项目：**不用**，项目自己占 443 更省事（`HTTPS_PORT=443`）。
+- 有两个及以上项目都要 `https://域名`（不带端口）：**用这个**。
+- 只是要 `https://域名:5088` 这种带端口的：也不用，看上一节「本端口直接 HTTPS」。
+
+### 三步用起来
+
+```bash
+# ① 起入口（占 443；可重复执行，会把已有转发全部重建）
+sudo bash /opt/ysf/docker/gateway.sh setup
+
+# ② 各项目改成「只在回环上开 HTTPS」，把 443 让出来
+#    编辑项目 .env：
+#      HTTPS_PORT=8843
+#      HTTPS_BIND=127.0.0.1
+#      UI_DOMAIN=（留空，管理台域名交给入口）
+#    第二个项目用 8844，第三个 8845……
+cd /opt/ysf/docker/emby-proxy-manager && docker compose up -d --force-recreate
+
+# ③ 签证书 + 加转发
+sudo bash /opt/ysf/docker/cert.sh emby.a.com --no-admin
+sudo bash /opt/ysf/docker/gateway.sh add emby.a.com https://127.0.0.1:8843
+```
+
+`add` 的最后一行就是访问地址。上游写 `https://` 表示对面也是 HTTPS（emby 项目就是），
+写 `http://` 或省略协议表示普通 HTTP。
+
+### 常用命令
+
+```bash
+sudo bash gateway.sh list                                 # 看所有转发 + 证书剩余天数
+sudo bash gateway.sh add tv.a.com http://127.0.0.1:8844   # 加一条
+sudo bash gateway.sh add tv.a.com                         # 不写上游 → 列本机端口让你挑
+sudo bash gateway.sh rm tv.a.com                          # 删一条（自动 reload）
+sudo bash gateway.sh reload                               # 手改配置后重载
+sudo bash gateway.sh status                               # 容器 / 443 监听 / 全部转发
+sudo bash gateway.sh down                                 # 停掉入口，443 释放
+```
+
+目录：`<根>/_gateway/{docker-compose.yml,conf.d,routes,cache,logs}`。转发规则存在
+`routes/*.route`，`conf.d/*.conf` 是渲染结果；改了 routes 跑一次 `setup` 就按 routes 重建。
+
+续期不用额外配置：证书都在 `_certs/`，`cert.sh --renew` 每天检查一次（前面配过的那条 crontab）。
+入口 nginx 会缓存证书句柄，续期后让它重载一次即可：`sudo bash gateway.sh reload`。
 
 
 ## 安全说明（务必看）

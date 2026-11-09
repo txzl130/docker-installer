@@ -762,6 +762,14 @@ install_one() {
     echo "  放行    云服务器要在安全组/防火墙放行这些端口：${PORTS_DISPLAY//,/, }（否则外部打不开）"
     echo "          上面只有这个程序自己的端口；以后建代理用到的端口（比如 5088），到时候再放行"
   fi
+  # 443 已被别的程序占着、又没有统一入口 → 提示怎么办（装第二个项目时就会遇到）
+  if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk 'NR>1{print $4}' | grep -qE '[:.]443$'; then
+    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'https-gateway'; then
+      echo "  提示    443 已经被别的程序占用（一台机器只能一个程序用它）。"
+      echo "          要让多个项目共用 443、按域名分给各自，跑一次："
+      echo "            sudo bash ${ROOT_DIR:-/opt/ysf/docker}/gateway.sh setup"
+    fi
+  fi
   echo "  日志    $DI_LOG"
 
   # ---------- 可选：清理源码 ----------

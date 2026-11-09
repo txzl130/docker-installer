@@ -23,6 +23,10 @@
 #                       （写了它，装完会问域名 → 签证书 → gateway.sh add → 打印 https 地址）
 #   --ask <VAR=提示>    安装时必须填的参数（写进项目 .env），可重复
 #                       例：--ask "TMDB_READ_TOKEN=TMDB v4 Read Access Token（必填）"
+#   --env-set <VAR=值>  安装时强制写进项目 .env 的项（不提问），可重复
+#                       例：--env-set HTTPS_PORT=8843 --env-set HTTPS_BIND=127.0.0.1
+#                       （让项目躲到 443 总入口后面，自己只听回环）
+#   --admin-domain      这个项目的管理台要用同一个域名访问（装完自动写 UI_DOMAIN 并重启）
 #   --allow-secrets     扫描到疑似凭据也继续（默认中止）
 #   --no-push           只提交到本地，不 push
 #
@@ -43,7 +47,7 @@ die()  { printf '%s[xx]%s %s\n' "$c_red" "$c_reset" "$*" >&2; exit 1; }
 
 NAME=""; SRC=""
 TITLE=""; DIR_DEF=""; PORTS=""; ENV_FROM=""; IMAGE=""; CONTAINER=""; NOTE=""
-UPSTREAM=""; ASK_LINES=()
+UPSTREAM=""; ASK_LINES=(); ENV_SETS=(); ADMIN_DOM=0
 VER=""
 ALLOW_SECRETS=0; DO_PUSH=1
 
@@ -59,6 +63,8 @@ while [ $# -gt 0 ]; do
     --version)      VER="${2:-}"; shift 2 ;;
     --upstream)     UPSTREAM="${2:-}"; shift 2 ;;
     --ask)          ASK_LINES+=("${2:-}"); shift 2 ;;
+    --env-set)      ENV_SETS+=("${2:-}"); shift 2 ;;
+    --admin-domain) ADMIN_DOM=1; shift ;;
     --allow-secrets) ALLOW_SECRETS=1; shift ;;
     --no-push)      DO_PUSH=0; shift ;;
     -h|--help)      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -211,6 +217,13 @@ for a in "${ASK_LINES[@]}"; do
   [ -n "$a" ] || continue
   printf 'ASK_%s\n' "$a" >> "$dest/project.conf"
 done
+for a in "${ENV_SETS[@]}"; do
+  [ -n "$a" ] || continue
+  printf 'ENV_SET_%s\n' "$a" >> "$dest/project.conf"
+done
+if [ "$ADMIN_DOM" = 1 ]; then
+  printf 'ADMIN_DOMAIN=1\n' >> "$dest/project.conf"
+fi
 
 # 重新生成列表
 : > "$REPO_ROOT/projects/list.txt"

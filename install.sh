@@ -421,6 +421,8 @@ MODE=""
 
 # 每个项目的「内部上游地址」（project.conf 的 UPSTREAM=），装完用它接 443 总入口
 declare -A PROJ_UPSTREAM=()
+# 每个项目装完要不要把管理台也挂到那个域名上（project.conf 的 ADMIN_DOMAIN=1）
+declare -A PROJ_ADMIN=()
 
 # 往 .env 写/改一个键（没有就追加）
 set_env_key() { # $1=文件 $2=键 $3=值
@@ -441,7 +443,7 @@ install_one() {
   local PKG="" PKG_SHA256="" TAR_SHA256="" NOTE="" PKG_VERSION=""
   local INSTALLED_VERSION="" IS_EXISTING MODE PORTS_DISPLAY probedir avail_k mem_kb swap_kb
   local got bak cbak busy eff_ports first p img status n reply
-  local ASKSPEC=() UPSTREAM=""
+  local ASKSPEC=() UPSTREAM="" ADMIN_DOM="" ENVSET=()
 
   info "项目：$PROJECT"
   info "正在下载安装包…"
@@ -470,7 +472,7 @@ install_one() {
     # 读取元数据（只认 KEY=VALUE，不执行里面的任何命令）
     NAME=""; TITLE=""; DIR_CONF=""; PORTS=""; ENV_FROM=""; IMAGE=""; CONTAINER=""
     PKG=""; PKG_SHA256=""; TAR_SHA256=""; NOTE=""; PKG_VERSION=""
-    ASKSPEC=(); UPSTREAM=""
+    ASKSPEC=(); UPSTREAM=""; ADMIN_DOM=""; ENVSET=()
     while IFS='=' read -r k v; do
       case "$k" in
         NAME) NAME="$v" ;; TITLE) TITLE="$v" ;; DIR) DIR_CONF="$v" ;; PORTS) PORTS="$v" ;;
@@ -478,6 +480,8 @@ install_one() {
         PKG) PKG="$v" ;; PKG_SHA256) PKG_SHA256="$v" ;; TAR_SHA256) TAR_SHA256="$v" ;; NOTE) NOTE="$v" ;;
         VERSION) PKG_VERSION="$v" ;;
         UPSTREAM) UPSTREAM="$v" ;;
+        ADMIN_DOMAIN) ADMIN_DOM="$v" ;;
+        ENV_SET_*) ENVSET+=("${k#ENV_SET_}=$v") ;;
         ASK_*) ASKSPEC+=("${k#ASK_}=$v") ;;
       esac
     done < "$tmp/project.conf"
@@ -630,6 +634,19 @@ install_one() {
     ok "已生成 .env（来自 $ENV_FROM，可自行修改）"
   fi
 
+  # ---------- 项目预设的 .env 键（project.conf 里的 ENV_SET_* 声明） ----------
+  # 例：ENV_SET_HTTPS_PORT=8843 → .env 里 HTTPS_PORT 强制改成 8843
+  # 用途：项目要躲在 443 总入口后面时，内部端口/绑定地址由项目自己声明
+  if [ "${#ENVSET[@]}" -gt 0 ] && [ -f "$TARGET_DIR/.env" ]; then
+    local es ek ev
+    for es in "${ENVSET[@]}"; do
+      ek="${es%%=*}"; ev="${es#*=}"
+      [ -n "$ek" ] || continue
+      set_env_key "$TARGET_DIR/.env" "$ek" "$ev"
+    done
+    ok "已写入项目预设的 .env 项（${#ENVSET[@]} 项）"
+  fi
+
   # ---------- 项目必填参数（project.conf 里的 ASK_* 声明） ----------
   # 例：ASK_TMDB_READ_TOKEN=TMDB v4 Read Access Token（必填）
   #     → 装的时候问一次，写进 $TARGET_DIR/.env 的 TMDB_READ_TOKEN=…
@@ -704,6 +721,7 @@ install_one() {
   ok "端口空闲：$eff_ports"
   # 记下内部上游（装完 offer_cert 会用它接 443 总入口）
   if [ -n "$UPSTREAM" ]; then PROJ_UPSTREAM["$PROJECT"]="$UPSTREAM"; fi
+  if [ "$ADMIN_DOM" = 1 ]; then PROJ_ADMIN["$PROJECT"]=1; fi
 
   # ---------- 构建 ----------
   info "构建镜像（首次约 1～2 分钟）"
@@ -950,6 +968,19 @@ offer_gateway_project() { # $1=项目名  $2=内网上游（如 http://127.0.0.1
   if bash "$ROOT_DIR/gateway.sh" add "$d" "$up" 2>/dev/null; then
     echo
     ok "搞定：https://$d  →  $up"
+
+    # 这个项目的「管理台」也要在这个域名上应答吗？（emby-proxy-manager 这类带界面的项目）
+    local dir="${TARGET_DIR:-$ROOT_DIR/$pj}"
+    if [ "${PROJ_ADMIN[$pj]:-}" = 1 ] && [ -f "$dir/.env" ]; then
+      set_env_key "$dir/.env" "UI_DOMAIN" "$d"
+      ok "管理台也挂到这个域名上（UI_DOMAIN=$d）"
+      if ( cd "$dir" && docker compose up -d --no-build --force-recreate >/dev/null 2>&1 ); then
+        ok "已重启容器让它生效"
+      else
+        warn "改了 .env 但重启失败：cd $dir && docker compose up -d --force-recreate"
+      fi
+    fi
+
     configure_renew
   else
     warn "证书有了，但接入口失败。手工：sudo bash $ROOT_DIR/gateway.sh add $d $up"

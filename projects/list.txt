@@ -1,1 +1,2 @@
 emby-proxy-manager|Emby 反代管理器|/opt/ysf/docker/emby-proxy-manager|1.1.6
+tmdb-proxy|TMDB 中转（图片缓存）|/opt/ysf/docker/tmdb-proxy|2.0.0

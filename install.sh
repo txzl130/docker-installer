@@ -419,12 +419,29 @@ fi
 MOD_DEFAULT="$MODE"
 MODE=""
 
+# 每个项目的「内部上游地址」（project.conf 的 UPSTREAM=），装完用它接 443 总入口
+declare -A PROJ_UPSTREAM=()
+
+# 往 .env 写/改一个键（没有就追加）
+set_env_key() { # $1=文件 $2=键 $3=值
+  local f="$1" k="$2" v="$3" t
+  t="$(mktemp)"
+  awk -v k="$k" -v v="$v" '
+    BEGIN { done = 0 }
+    index($0, k "=") == 1 { print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "$f" > "$t" && mv -f "$t" "$f"
+  rm -f "$t" 2>/dev/null || true
+}
+
 install_one() {
   local PROJECT="$1"
   local NAME="" TITLE="" DIR_CONF="" PORTS="" ENV_FROM="" IMAGE="" CONTAINER=""
   local PKG="" PKG_SHA256="" TAR_SHA256="" NOTE="" PKG_VERSION=""
   local INSTALLED_VERSION="" IS_EXISTING MODE PORTS_DISPLAY probedir avail_k mem_kb swap_kb
   local got bak cbak busy eff_ports first p img status n reply
+  local ASKSPEC=() UPSTREAM=""
 
   info "项目：$PROJECT"
   info "正在下载安装包…"
@@ -453,12 +470,15 @@ install_one() {
     # 读取元数据（只认 KEY=VALUE，不执行里面的任何命令）
     NAME=""; TITLE=""; DIR_CONF=""; PORTS=""; ENV_FROM=""; IMAGE=""; CONTAINER=""
     PKG=""; PKG_SHA256=""; TAR_SHA256=""; NOTE=""; PKG_VERSION=""
+    ASKSPEC=(); UPSTREAM=""
     while IFS='=' read -r k v; do
       case "$k" in
         NAME) NAME="$v" ;; TITLE) TITLE="$v" ;; DIR) DIR_CONF="$v" ;; PORTS) PORTS="$v" ;;
         ENV_FROM) ENV_FROM="$v" ;; IMAGE) IMAGE="$v" ;; CONTAINER) CONTAINER="$v" ;;
         PKG) PKG="$v" ;; PKG_SHA256) PKG_SHA256="$v" ;; TAR_SHA256) TAR_SHA256="$v" ;; NOTE) NOTE="$v" ;;
         VERSION) PKG_VERSION="$v" ;;
+        UPSTREAM) UPSTREAM="$v" ;;
+        ASK_*) ASKSPEC+=("${k#ASK_}=$v") ;;
       esac
     done < "$tmp/project.conf"
     [ -n "$PKG" ] || { warn "$cbase 上的 project.conf 不完整，跳过"; continue; }
@@ -610,6 +630,31 @@ install_one() {
     ok "已生成 .env（来自 $ENV_FROM，可自行修改）"
   fi
 
+  # ---------- 项目必填参数（project.conf 里的 ASK_* 声明） ----------
+  # 例：ASK_TMDB_READ_TOKEN=TMDB v4 Read Access Token（必填）
+  #     → 装的时候问一次，写进 $TARGET_DIR/.env 的 TMDB_READ_TOKEN=…
+  if [ "${#ASKSPEC[@]}" -gt 0 ] && [ -f "$TARGET_DIR/.env" ]; then
+    local spec key prompt cur val
+    for spec in "${ASKSPEC[@]}"; do
+      key="${spec%%=*}"; prompt="${spec#*=}"
+      cur="$(grep -E "^${key}=" "$TARGET_DIR/.env" | tail -n1 | cut -d= -f2- | tr -d '\r' || true)"
+      if [ -n "$cur" ]; then
+        ok "$key 已经有值了，跳过"
+        continue
+      fi
+      if [ -z "$TTY_FD" ]; then
+        die "这个项目必须填 $key：$prompt
+    非交互安装请先手写进 $TARGET_DIR/.env，或在有终端的窗口里重跑。"
+      fi
+      ask "$prompt" ""
+      val="$REPLY"
+      [ -n "$val" ] || die "这一项必须填：$prompt"
+      set_env_key "$TARGET_DIR/.env" "$key" "$val"
+      ok "已写入 .env：$key"
+    done
+    chmod 600 "$TARGET_DIR/.env" 2>/dev/null || true
+  fi
+
   # ---------- 管理台是否对外开放 ----------
   # 项目默认 UI_BIND=127.0.0.1（安全，但外部打不开）；这里问一次，省得装完一脸问号
   BIND_LOOPBACK=0
@@ -657,6 +702,8 @@ install_one() {
     3) 装完再改 $TARGET_DIR/.env，然后 docker compose up -d"
   fi
   ok "端口空闲：$eff_ports"
+  # 记下内部上游（装完 offer_cert 会用它接 443 总入口）
+  if [ -n "$UPSTREAM" ]; then PROJ_UPSTREAM["$PROJECT"]="$UPSTREAM"; fi
 
   # ---------- 构建 ----------
   info "构建镜像（首次约 1～2 分钟）"
@@ -795,98 +842,165 @@ if [ "${#PROJECTS[@]}" -gt 1 ]; then
   echo "全部完成：${PROJECTS[*]}"
   echo "根目录：$ROOT_DIR"
 fi
-
 # ======================================================================
-# 可选：顺便签一张 HTTPS 证书（不用填服务商的密钥）
+# 可选：顺便办 HTTPS（签证书 + 接 443 总入口）
+#
+#   两种项目走两条路：
+#   - 有 UPSTREAM 的（tmdb-proxy / playdock 这类只监听内网的服务）：
+#       签证书 → 确保 443 总入口在跑 → 把域名转发到它的内网端口 → 打印 https 地址
+#   - 有 data/certs 的（emby-proxy-manager）：
+#       沿用「按域名认领」：证书放进项目，建代理时填同一个域名就自动开 HTTPS
 # ======================================================================
-offer_cert() {
-  [ "$UNINSTALL" = 1 ] && return 0
-  [ "$DRY_RUN" = 1 ] && return 0
-  [ -n "$TTY_FD" ] || return 0
+CERT_TOOLS_READY=0
+RENEW_ASKED=0
 
-  local pj have=0 domain email tmp
-  for pj in "${PROJECTS[@]}"; do
-    [ -d "$ROOT_DIR/$pj/data/certs" ] && have=1
-  done
-  [ "$have" = 1 ] || return 0
-
-  # 不管这次签不签，都先把 cert.sh / gateway.sh 放到安装根目录，方便以后随时跑
-  tmp="$(mktemp -d)"
-  if fetch "cert.sh" "$tmp/cert.sh" 2>/dev/null; then
-    cp -f "$tmp/cert.sh" "$ROOT_DIR/cert.sh" 2>/dev/null || true
-    chmod +x "$ROOT_DIR/cert.sh" 2>/dev/null || true
+ensure_cert_tools() {
+  [ "$CERT_TOOLS_READY" = 1 ] && return 0
+  local t
+  t="$(mktemp -d)"
+  if fetch "cert.sh" "$t/cert.sh" 2>/dev/null; then
+    cp -f "$t/cert.sh" "$ROOT_DIR/cert.sh"
+    chmod +x "$ROOT_DIR/cert.sh"
   else
-    warn "拉不到 cert.sh（不影响安装；以后可手动下载到 $ROOT_DIR/cert.sh）"
+    warn "拉不到 cert.sh（不影响安装；以后可手动放到 $ROOT_DIR/cert.sh）"
   fi
-  if fetch "gateway.sh" "$tmp/gateway.sh" 2>/dev/null; then
-    cp -f "$tmp/gateway.sh" "$ROOT_DIR/gateway.sh" 2>/dev/null || true
-    chmod +x "$ROOT_DIR/gateway.sh" 2>/dev/null || true
+  if fetch "gateway.sh" "$t/gateway.sh" 2>/dev/null; then
+    cp -f "$t/gateway.sh" "$ROOT_DIR/gateway.sh"
+    chmod +x "$ROOT_DIR/gateway.sh"
   else
     warn "拉不到 gateway.sh（不影响安装）"
   fi
+  rm -rf "$t"
+  CERT_TOOLS_READY=1
+}
 
+# 问域名，输入不合法就重问；直接回车 = 放弃（DOMAIN_PICK 为空）
+pick_domain() {
+  local d
+  while :; do
+    ask "${1:-要签的域名（例如 emby.abc.com；直接回车=先不签）}" ""
+    d="$REPLY"
+    if [ -z "$d" ]; then DOMAIN_PICK=""; return 0; fi
+    case "$d" in
+      *[!a-zA-Z0-9.-]*|.*|*..*|*.)
+        warn "域名只能有字母、数字、点和横线，而且不能以点开头或结尾，重新输入"
+        continue ;;
+    esac
+    case "$d" in
+      *.*) DOMAIN_PICK="$d"; return 0 ;;
+      *) warn "域名中间要有点（像 emby.abc.com 这样），重新输入"; continue ;;
+    esac
+  done
+}
+
+configure_renew() {
+  [ "$RENEW_ASKED" = 1 ] && return 0
+  command -v crontab >/dev/null 2>&1 || return 0
+  RENEW_ASKED=1
+  if crontab -l 2>/dev/null | grep -q 'cert.sh --renew'; then
+    ok "自动续期已经配好了（每天 3:30 检查，剩 30 天内才续）"
+    return 0
+  fi
+  ask "要不要现在就把自动续期配上（每天 3:30 检查一次）？(Y/n)" "y"
+  case "${REPLY:-y}" in
+    n|N|no|NO) echo "  以后想配：sudo bash $ROOT_DIR/cert.sh --renew --dir $ROOT_DIR" ;;
+    *)
+      if (crontab -l 2>/dev/null; echo "30 3 * * * bash $ROOT_DIR/cert.sh --renew --dir $ROOT_DIR >>/var/log/cert-renew.log 2>&1") | crontab - 2>/dev/null; then
+        ok "自动续期已配好（每天 3:30 检查，剩 30 天内自动续）"
+      else
+        warn "配 crontab 失败，请手动加：30 3 * * * bash $ROOT_DIR/cert.sh --renew --dir $ROOT_DIR"
+      fi ;;
+  esac
+}
+
+offer_gateway_project() { # $1=项目名  $2=内网上游（如 http://127.0.0.1:8845）
+  local pj="$1" up="$2" d
+  echo
+  info "$pj：现在就用 https 访问它吗？（可选，直接回车 = 用默认）"
+  echo "  它只监听内网 $up；外部访问由 443 总入口按域名转发过去。"
+  ask "现在就办吗？(Y/n)" "y"
+  case "${REPLY:-y}" in
+    n|N|no|NO)
+      echo "  以后随时：sudo bash $ROOT_DIR/cert.sh 域名 --no-install --no-admin"
+      echo "            sudo bash $ROOT_DIR/gateway.sh add 域名 $up"
+      return 0 ;;
+  esac
+
+  ensure_cert_tools
+  pick_domain "给 $pj 用的域名（直接回车=先不办）"
+  [ -n "$DOMAIN_PICK" ] || { echo "  好，先不办。"; return 0; }
+  d="$DOMAIN_PICK"
+
+  if ! bash "$ROOT_DIR/cert.sh" "$d" --dir "$ROOT_DIR" --no-install --no-admin; then
+    warn "证书没签成（不影响服务）。稍后重试：sudo bash $ROOT_DIR/cert.sh $d --no-install --no-admin"
+    return 0
+  fi
+
+  # 443 总入口：没跑就起一个
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'https-gateway'; then
+    if [ -f "$ROOT_DIR/gateway.sh" ]; then
+      if bash "$ROOT_DIR/gateway.sh" setup >/dev/null 2>&1; then
+        ok "443 总入口已启动（容器 https-gateway）"
+      else
+        warn "443 总入口起不来：跑一次 sudo bash $ROOT_DIR/gateway.sh setup 看原因"
+      fi
+    fi
+  fi
+
+  if bash "$ROOT_DIR/gateway.sh" add "$d" "$up" 2>/dev/null; then
+    echo
+    ok "搞定：https://$d  →  $up"
+    configure_renew
+  else
+    warn "证书有了，但接入口失败。手工：sudo bash $ROOT_DIR/gateway.sh add $d $up"
+  fi
+}
+
+offer_emby_cert() {
   echo
   info "顺手把 HTTPS 也办了？（可选，直接回车 = 先不签）"
   echo "  不填服务商密钥、不停现有网站：80 端口空着就直接签，被别的网站占着就借用它的目录。"
-  echo "  签完再决定给哪个代理用，随时可以再跑一次。"
   ask "现在签一张证书吗？(y/N)" "n"
   case "$REPLY" in
     y|Y|yes|YES) ;;
     *) echo "  以后随时可以跑：sudo bash $ROOT_DIR/cert.sh 你的域名"; return 0 ;;
   esac
+  pick_domain ""
+  [ -n "$DOMAIN_PICK" ] || { echo "  好，先不签。以后：sudo bash $ROOT_DIR/cert.sh 你的域名"; return 0; }
 
-  # 输入不对就重问，不静默跳过；直接回车 = 不签（明确说一声）
-  domain=""
-  while :; do
-    ask "要签的域名（例如 emby.abc.com；直接回车=先不签）" ""
-    domain="$REPLY"
-    if [ -z "$domain" ]; then
-      echo "  好，先不签。以后随时可以：sudo bash $ROOT_DIR/cert.sh 你的域名"
-      return 0
-    fi
-    case "$domain" in
-      *[!a-zA-Z0-9.-]*|.*|*..*|*.)
-        warn "域名只能有字母、数字、点和横线，而且不能以点开头或结尾，重新输入"; continue ;;
-    esac
-    case "$domain" in
-      *.*) break ;;
-      *) warn "域名中间要有点（像 emby.abc.com 这样），重新输入"; continue ;;
-    esac
-  done
-
-  echo
-  cert_extra=()
+  local d="$DOMAIN_PICK" cert_extra=()
   [ -n "${ACME_EMAIL:-}" ] && cert_extra=(--email "$ACME_EMAIL")
-  if bash "$tmp/cert.sh" "$domain" --dir "$ROOT_DIR" "${cert_extra[@]}" --no-install; then
-    echo
-    ok "证书签好了，并且已经按域名 $domain 放进项目里了"
-    echo "  现在这个域名能干两件事（都不用再跑命令）："
-    echo "    1) 打开管理台：https://$domain    （刚才它问的那一步选 y 就会开）"
-    echo "    2) 转发你的 Emby：在管理台「代理」页新增，域名填 $domain、端口随便（比如 5088），"
-    echo "       保存后地址就是 https://$domain:5088 （HTTPS 自动开，模式显示「本端口直接 HTTPS」）"
-    echo "  想不带端口转发 Emby：去「证书」页把那一行改成「跳转到共用 HTTPS 端口」，"
-    echo "    地址就是 https://$domain （共用端口由 .env 的 HTTPS_PORT 决定，默认 443）"
-    if command -v crontab >/dev/null 2>&1; then
-      if crontab -l 2>/dev/null | grep -q 'cert.sh --renew'; then
-        ok "自动续期已经配好了（每天 3:30 检查，剩 30 天内才续）"
-      else
-        ask "要不要现在就把自动续期配上（每天 3:30 检查一次）？(Y/n)" "y"
-        case "${REPLY:-y}" in
-          n|N|no|NO) echo "  以后想配：sudo bash $ROOT_DIR/cert.sh --renew --dir $ROOT_DIR" ;;
-          *)
-            if (crontab -l 2>/dev/null; echo "30 3 * * * bash $ROOT_DIR/cert.sh --renew --dir $ROOT_DIR >>/var/log/cert-renew.log 2>&1") | crontab - 2>/dev/null; then
-              ok "自动续期已配好（每天 3:30 检查，剩 30 天内自动续）"
-            else
-              warn "配 crontab 失败，请手动加：30 3 * * * bash $ROOT_DIR/cert.sh --renew --dir $ROOT_DIR"
-            fi
-            ;;
-        esac
-      fi
-    fi
+  if bash "$ROOT_DIR/cert.sh" "$d" --dir "$ROOT_DIR" "${cert_extra[@]}" --no-install; then
+    ok "证书签好了，并且已经按域名 $d 放进项目里了"
+    echo "  打开管理台：https://$d"
+    echo "  转发 Emby：管理台「代理」新建，域名填 $d、端口随便（如 5088）→ https://$d:5088"
+    configure_renew
   else
-    warn "这次没签成（不影响已经装好的服务）。稍后重试：sudo bash $ROOT_DIR/cert.sh $domain"
+    warn "这次没签成（不影响已装好的服务）。稍后：sudo bash $ROOT_DIR/cert.sh $d"
   fi
-  rm -rf "$tmp"
+}
+
+offer_cert() {
+  [ "$UNINSTALL" = 1 ] && return 0
+  [ "$DRY_RUN" = 1 ] && return 0
+  [ -n "$TTY_FD" ] || return 0
+  [ "$ASSUME_YES" = 1 ] && return 0
+
+  local pj up any=0
+  for pj in "${PROJECTS[@]}"; do
+    up="${PROJ_UPSTREAM[$pj]:-}"
+    if [ -n "$up" ] || [ -d "$ROOT_DIR/$pj/data/certs" ]; then any=1; fi
+  done
+  [ "$any" = 1 ] || return 0
+
+  for pj in "${PROJECTS[@]}"; do
+    up="${PROJ_UPSTREAM[$pj]:-}"
+    if [ -n "$up" ]; then
+      offer_gateway_project "$pj" "$up"
+    elif [ -d "$ROOT_DIR/$pj/data/certs" ]; then
+      offer_emby_cert
+    fi
+  done
 }
 
 offer_cert

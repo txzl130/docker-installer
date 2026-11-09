@@ -19,6 +19,10 @@
 #   --container <名字>  容器名，用于等待健康和打印日志
 #   --note <文字>       安装完成后显示的一句话
 #   --version <文字>    指定这次的版本号（默认自动取 VERSION 文件 / package.json / git 短哈希）
+#   --upstream <地址>   装完自动接 443 总入口时用的内网上游，如 http://127.0.0.1:8845
+#                       （写了它，装完会问域名 → 签证书 → gateway.sh add → 打印 https 地址）
+#   --ask <VAR=提示>    安装时必须填的参数（写进项目 .env），可重复
+#                       例：--ask "TMDB_READ_TOKEN=TMDB v4 Read Access Token（必填）"
 #   --allow-secrets     扫描到疑似凭据也继续（默认中止）
 #   --no-push           只提交到本地，不 push
 #
@@ -39,6 +43,7 @@ die()  { printf '%s[xx]%s %s\n' "$c_red" "$c_reset" "$*" >&2; exit 1; }
 
 NAME=""; SRC=""
 TITLE=""; DIR_DEF=""; PORTS=""; ENV_FROM=""; IMAGE=""; CONTAINER=""; NOTE=""
+UPSTREAM=""; ASK_LINES=()
 VER=""
 ALLOW_SECRETS=0; DO_PUSH=1
 
@@ -52,6 +57,8 @@ while [ $# -gt 0 ]; do
     --container)    CONTAINER="${2:-}"; shift 2 ;;
     --note)         NOTE="${2:-}"; shift 2 ;;
     --version)      VER="${2:-}"; shift 2 ;;
+    --upstream)     UPSTREAM="${2:-}"; shift 2 ;;
+    --ask)          ASK_LINES+=("${2:-}"); shift 2 ;;
     --allow-secrets) ALLOW_SECRETS=1; shift ;;
     --no-push)      DO_PUSH=0; shift ;;
     -h|--help)      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -102,6 +109,8 @@ tar $TAR_FMT -czf "$tmp/pkg.tar.gz" -C "$SRC" \
   --exclude='./.git' --exclude='./.git/*' \
   --exclude='.env' --exclude='.env.local' \
   --exclude='data' --exclude='./data/*' \
+  --exclude='dl' --exclude='./dl/*' \
+  --exclude='state.json' --exclude='certbot-webroot' \
   --exclude='node_modules' \
   --exclude='*.pem' --exclude='*.key' --exclude='*.p12' --exclude='*.pfx' \
   --exclude='*.log' --exclude='*.tgz' --exclude='*.zip' \
@@ -193,6 +202,15 @@ TAR_SHA256=$tar_sha
 PW_CHECK=$pw_check
 NOTE=$NOTE
 EOF
+
+# 只在有值时才写（保持老项目的 project.conf 干净）
+if [ -n "$UPSTREAM" ]; then
+  printf 'UPSTREAM=%s\n' "$UPSTREAM" >> "$dest/project.conf"
+fi
+for a in "${ASK_LINES[@]}"; do
+  [ -n "$a" ] || continue
+  printf 'ASK_%s\n' "$a" >> "$dest/project.conf"
+done
 
 # 重新生成列表
 : > "$REPO_ROOT/projects/list.txt"

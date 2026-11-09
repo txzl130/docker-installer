@@ -732,8 +732,17 @@ install_one() {
   # Docker 29 起 build.network=host 需要显式授权，否则 compose build 会直接报
   # "additional privileges requested"（以前只能靠失败后回退）
   if ! ( cd "$TARGET_DIR" && BUILDX_ENTITLEMENTS=network.host docker compose build ); then
+    # 回退：一些老 docker / buildkit 不认 compose 的 build.network，用 docker build 直接来。
+    # ⚠️ 只能对「单镜像」项目这么做：多镜像项目（比如 tmdb-proxy = app + nginx）
+    #    回退只会构建第一个镜像，启动时必然报 No such image。
+    imgs="$( cd "$TARGET_DIR" && docker compose config --images 2>/dev/null | grep -v '^$' | sort -u || true )"
+    img_n="$(printf '%s\n' "$imgs" | grep -c . || true)"
+    if [ "${img_n:-0}" -gt 1 ]; then
+      die "构建失败：这个项目有 $img_n 个镜像，无法用单镜像回退。
+    真正的错误在上面（往上翻能找到 ERROR / failed to solve）。日志：$DI_LOG"
+    fi
     warn "docker compose build 失败，改用 docker build --network host"
-    img="$( cd "$TARGET_DIR" && docker compose config --images 2>/dev/null | head -n1 || true )"
+    img="$(printf '%s\n' "$imgs" | head -n1)"
     [ -n "$img" ] || img="${IMAGE:-$NAME:local}"
     ( cd "$TARGET_DIR" && docker build --network host -t "$img" . ) || die "构建失败（日志：$DI_LOG）"
     ok "已用 --network host 构建出 $img"
